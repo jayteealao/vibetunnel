@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ApiSocketServer } from './api-socket-server.js';
 import { type GitFollowRequest, MessageType } from './pty/socket-protocol.js';
 
 // Mock net module
@@ -39,8 +40,12 @@ vi.mock('./utils/git-error.js', () => ({
   createGitError: (error: Error, message: string) => new Error(`${message}: ${error.message}`),
 }));
 
-vi.mock('./websocket/control-unix-handler.js', () => ({
-  controlUnixHandler: {
+vi.mock('./websocket/control-ipc-handler.js', () => ({
+  controlIpcHandler: {
+    isClientConnected: vi.fn().mockReturnValue(false),
+    sendToClient: vi.fn(),
+  },
+  controlUnixHandler: { // Legacy export
     isMacAppConnected: vi.fn().mockReturnValue(false),
     sendToMac: vi.fn(),
   },
@@ -146,12 +151,15 @@ describe('ApiSocketServer', () => {
 
       const mockSocket = {
         write: vi.fn(),
-      };
+      } as unknown as import('net').Socket;
 
-      await apiSocketServer.handleGitFollowRequest(mockSocket, request);
+      // Access private method for testing
+      // biome-ignore lint/suspicious/noExplicitAny: Accessing private method
+      await (apiSocketServer as any).handleGitFollowRequest(mockSocket, request);
 
       expect(mockSocket.write).toHaveBeenCalled();
-      const call = mockSocket.write.mock.calls[0][0];
+      // biome-ignore lint/suspicious/noExplicitAny: Inspecting mock call
+      const call = (mockSocket.write as any).mock.calls[0][0];
       expect(call[0]).toBe(MessageType.GIT_FOLLOW_RESPONSE);
     });
 
@@ -166,9 +174,11 @@ describe('ApiSocketServer', () => {
 
       const mockSocket = {
         write: vi.fn(),
-      };
+      } as unknown as import('net').Socket;
 
-      await apiSocketServer.handleGitFollowRequest(mockSocket, request);
+      // Access private method for testing
+      // biome-ignore lint/suspicious/noExplicitAny: Accessing private method
+      await (apiSocketServer as any).handleGitFollowRequest(mockSocket, request);
 
       expect(mockSocket.write).toHaveBeenCalled();
     });
@@ -185,9 +195,11 @@ describe('ApiSocketServer', () => {
 
       const mockSocket = {
         write: vi.fn(),
-      };
+      } as unknown as import('net').Socket;
 
-      await apiSocketServer.handleGitFollowRequest(mockSocket, request);
+      // Access private method for testing
+      // biome-ignore lint/suspicious/noExplicitAny: Accessing private method
+      await (apiSocketServer as any).handleGitFollowRequest(mockSocket, request);
 
       expect(mockSocket.write).toHaveBeenCalled();
     });
@@ -197,15 +209,18 @@ describe('ApiSocketServer', () => {
     it('should acknowledge Git event notifications', async () => {
       const mockSocket = {
         write: vi.fn(),
-      };
+      } as unknown as import('net').Socket;
 
-      await apiSocketServer.handleGitEventNotify(mockSocket, {
+      // Access private method for testing
+      // biome-ignore lint/suspicious/noExplicitAny: Accessing private method
+      await (apiSocketServer as any).handleGitEventNotify(mockSocket, {
         repoPath: '/Users/test/project',
         type: 'checkout',
       });
 
       expect(mockSocket.write).toHaveBeenCalled();
-      const call = mockSocket.write.mock.calls[0][0];
+      // biome-ignore lint/suspicious/noExplicitAny: Inspecting mock call
+      const call = (mockSocket.write as any).mock.calls[0][0];
       expect(call[0]).toBe(MessageType.GIT_EVENT_ACK);
     });
   });

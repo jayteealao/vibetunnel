@@ -38,7 +38,7 @@ import {
 } from '../utils/terminal-title.js';
 import { WriteQueue } from '../utils/write-queue.js';
 import { VERSION } from '../version.js';
-import { controlUnixHandler } from '../websocket/control-unix-handler.js';
+import { controlIpcHandler } from '../websocket/control-ipc-handler.js';
 import { computeActivityStatus } from './activity-status.js';
 import { AsciinemaWriter } from './asciinema-writer.js';
 import { FishHandler } from './fish-handler.js';
@@ -561,9 +561,9 @@ export class PtyManager extends EventEmitter {
       // Emit session started event
       this.emit('sessionStarted', sessionId, sessionInfo.name || sessionInfo.command.join(' '));
 
-      // Send notification to Mac app
-      if (controlUnixHandler.isMacAppConnected()) {
-        controlUnixHandler.sendNotification(
+      // Send notification to native app
+      if (controlIpcHandler.isClientConnected()) {
+        controlIpcHandler.sendNotification(
           'Session Started',
           sessionInfo.name || sessionInfo.command.join(' '),
           {
@@ -736,9 +736,9 @@ export class PtyManager extends EventEmitter {
           exitCode
         );
 
-        // Send notification to Mac app
-        if (controlUnixHandler.isMacAppConnected()) {
-          controlUnixHandler.sendNotification(
+        // Send notification to native app
+        if (controlIpcHandler.isClientConnected()) {
+          controlIpcHandler.sendNotification(
             'Session Ended',
             session.sessionInfo.name || session.sessionInfo.command.join(' '),
             {
@@ -2445,14 +2445,14 @@ export class PtyManager extends EventEmitter {
     );
     this.emit('commandFinished', eventData);
 
-    // Send notification to Mac app
-    if (controlUnixHandler.isMacAppConnected()) {
+    // Send notification to native app
+    if (controlIpcHandler.isClientConnected()) {
       const notifTitle = isClaudeCommand ? 'Claude Task Finished' : 'Command Finished';
       const notifBody = `"${command}" completed in ${Math.round(duration / 1000)}s.`;
       logger.info(
         `🔔 NOTIFICATION DEBUG: Sending command notification to Mac - title: "${notifTitle}", body: "${notifBody}"`
       );
-      controlUnixHandler.sendNotification('Your Turn', notifBody, {
+      controlIpcHandler.sendNotification('Your Turn', notifBody, {
         type: 'your-turn',
         sessionId: session.id,
         sessionName: session.sessionInfo.name || session.sessionInfo.command.join(' '),

@@ -82,7 +82,7 @@ class SystemHandler implements MessageHandler {
 
     switch (message.action) {
       case 'ping':
-        // Already handled in handleMacMessage
+        // Already handled in handleClientMessage
         return null;
 
       case 'ready':
@@ -116,11 +116,11 @@ class SystemHandler implements MessageHandler {
  * @example
  * ```typescript
  * // Create and start the handler
- * const handler = new ControlUnixHandler();
+ * const handler = new ControlIpcHandler();
  * await handler.start();
  *
  * // Check if native app is connected
- * if (handler.isMacAppConnected()) {
+ * if (handler.isClientConnected()) {
  *   // Send a control message
  *   const response = await handler.sendControlMessage({
  *     id: 'msg-123',
@@ -141,7 +141,7 @@ class SystemHandler implements MessageHandler {
  * });
  * ```
  */
-export class ControlUnixHandler {
+export class ControlIpcHandler {
   private pendingRequests = new Map<string, (response: ControlMessage) => void>();
   private clientSocket: net.Socket | null = null;
   private transport: IPCTransport;
@@ -174,7 +174,7 @@ export class ControlUnixHandler {
 
     // Set up connection handler
     this.transport.onConnection((socket) => {
-      this.handleMacConnection(socket);
+      this.handleClientConnection(socket);
     });
 
     // Set up error handler
@@ -200,11 +200,16 @@ export class ControlUnixHandler {
     logger.log('✅ Control IPC handler stopped');
   }
 
-  isMacAppConnected(): boolean {
+  isClientConnected(): boolean {
     return this.transport.isConnected();
   }
 
-  private handleMacConnection(socket: net.Socket) {
+  // Deprecated alias for backward compatibility
+  isMacAppConnected(): boolean {
+    return this.isClientConnected();
+  }
+
+  private handleClientConnection(socket: net.Socket) {
     logger.log('🔌 New client connection via IPC');
     logger.log(`🔍 Socket info: local=${socket.localAddress}, remote=${socket.remoteAddress}`);
 
@@ -242,7 +247,7 @@ export class ControlUnixHandler {
       this.messageBuffer = Buffer.concat([this.messageBuffer, chunk]);
 
       logger.log(
-        `📥 Received from Mac: ${chunk.length} bytes, buffer size: ${this.messageBuffer.length}`
+        `📥 Received from client: ${chunk.length} bytes, buffer size: ${this.messageBuffer.length}`
       );
 
       // Log first few bytes for debugging
@@ -301,12 +306,12 @@ export class ControlUnixHandler {
 
           const message: ControlMessage = JSON.parse(messageStr);
           logger.log(
-            `✅ Parsed Mac message: category=${message.category}, action=${message.action}, id=${message.id}`
+            `✅ Parsed client message: category=${message.category}, action=${message.action}, id=${message.id}`
           );
 
-          this.handleMacMessage(message);
+          this.handleClientMessage(message);
         } catch (error) {
-          logger.error('❌ Failed to parse Mac message:', error);
+          logger.error('❌ Failed to parse client message:', error);
           logger.error('Message length:', messageLength);
           logger.error('Raw message buffer:', messageData.toString('utf-8'));
         }
@@ -314,7 +319,7 @@ export class ControlUnixHandler {
     });
 
     socket.on('error', (error) => {
-      logger.error('❌ Mac socket error:', error);
+      logger.error('❌ Client socket error:', error);
       const errorObj = error as NodeJS.ErrnoException;
       logger.error('Error details:', {
         code: errorObj.code,
@@ -325,35 +330,35 @@ export class ControlUnixHandler {
 
       // Check if it's a write-related error
       if (errorObj.code === 'EPIPE' || errorObj.code === 'ECONNRESET') {
-        logger.error('🔴 Connection broken - Mac app likely closed the connection');
+        logger.error('🔴 Connection broken - Client app likely closed the connection');
       }
     });
 
     socket.on('close', (hadError) => {
-      logger.log(`🔌 Mac disconnected (hadError: ${hadError})`);
+      logger.log(`🔌 Client disconnected (hadError: ${hadError})`);
       logger.log(
         `📊 Socket state: destroyed=${socket.destroyed}, readable=${socket.readable}, writable=${socket.writable}`
       );
 
       if (socket === this.clientSocket) {
         this.clientSocket = null;
-        logger.log('🧹 Cleared Mac socket reference');
+        logger.log('🧹 Cleared client socket reference');
       }
     });
 
     // Handle drain event for backpressure
     socket.on('drain', () => {
-      logger.log('Mac socket drained - ready for more data');
+      logger.log('Client socket drained - ready for more data');
     });
 
     // Add event for socket end (clean close)
     socket.on('end', () => {
-      logger.log('📴 Mac socket received FIN packet (clean close)');
+      logger.log('📴 Client socket received FIN packet (clean close)');
     });
 
-    // Send ready event to Mac
-    logger.log('📤 Sending initial system:ready event to Mac');
-    this.sendToMac(createControlEvent('system', 'ready'));
+    // Send ready event to client
+    logger.log('📤 Sending initial system:ready event to client');
+    this.sendToClient(createControlEvent('system', 'ready'));
     logger.log('✅ system:ready event sent');
   }
 
@@ -375,7 +380,7 @@ export class ControlUnixHandler {
           `📥 Parsed browser message - type: ${message.type}, category: ${message.category}, action: ${message.action}`
         );
 
-        // Handle browser -> Mac messages
+        // Handle browser -> Client messages
         logger.warn(`⚠️ Browser sent message for category: ${message.category}`);
       } catch (error) {
         logger.error('❌ Failed to parse browser message:', error);
@@ -398,15 +403,15 @@ export class ControlUnixHandler {
     });
   }
 
-  private async handleMacMessage(message: ControlMessage) {
+  private async handleClientMessage(message: ControlMessage) {
     logger.log(
-      `Mac message - category: ${message.category}, action: ${message.action}, type: ${message.type}, id: ${message.id}`
+      `Client message - category: ${message.category}, action: ${message.action}, type: ${message.type}, id: ${message.id}`
     );
 
-    // Handle ping keep-alive from Mac client
+    // Handle ping keep-alive from client
     if (message.category === 'system' && message.action === 'ping') {
       const pong = createControlResponse(message, { status: 'ok' });
-      this.sendToMac(pong);
+      this.sendToClient(pong);
       return;
     }
 
@@ -439,7 +444,7 @@ export class ControlUnixHandler {
           null,
           `Unknown category: ${message.category}`
         );
-        this.sendToMac(response);
+        this.sendToClient(response);
       }
       return;
     }
@@ -447,7 +452,7 @@ export class ControlUnixHandler {
     try {
       const response = await handler.handleMessage(message);
       if (response) {
-        this.sendToMac(response);
+        this.sendToClient(response);
       }
     } catch (error) {
       logger.error(`Handler error for ${message.category}:${message.action}:`, error);
@@ -457,14 +462,14 @@ export class ControlUnixHandler {
           null,
           error instanceof Error ? error.message : 'Handler error'
         );
-        this.sendToMac(response);
+        this.sendToClient(response);
       }
     }
   }
 
   async sendControlMessage(message: ControlMessage): Promise<ControlMessage | null> {
-    // If Mac is not connected, return null immediately
-    if (!this.isMacAppConnected()) {
+    // If client is not connected, return null immediately
+    if (!this.isClientConnected()) {
       return null;
     }
 
@@ -473,7 +478,7 @@ export class ControlUnixHandler {
       this.pendingRequests.set(message.id, resolve);
 
       // Send the message
-      this.sendToMac(message);
+      this.sendToClient(message);
 
       // Set a timeout
       setTimeout(() => {
@@ -486,7 +491,7 @@ export class ControlUnixHandler {
   }
 
   /**
-   * Send a notification to the Mac app via the Unix socket
+   * Send a notification to the client app via the IPC socket
    */
   sendNotification(
     title: string,
@@ -498,7 +503,7 @@ export class ControlUnixHandler {
     }
   ): void {
     if (!this.clientSocket) {
-      logger.warn('[ControlUnixHandler] Cannot send notification - native app not connected');
+      logger.warn('[ControlIpcHandler] Cannot send notification - native app not connected');
       return;
     }
 
@@ -514,11 +519,16 @@ export class ControlUnixHandler {
       },
     };
 
-    this.sendToMac(message);
-    logger.info('[ControlUnixHandler] Sent notification:', { title, body, options });
+    this.sendToClient(message);
+    logger.info('[ControlIpcHandler] Sent notification:', { title, body, options });
   }
 
+  // Deprecated alias for backward compatibility
   sendToMac(message: ControlMessage): void {
+    this.sendToClient(message);
+  }
+
+  sendToClient(message: ControlMessage): void {
     if (!this.clientSocket) {
       logger.warn('⚠️ Cannot send to client - no socket connection');
       return;
@@ -544,7 +554,7 @@ export class ControlUnixHandler {
 
       // Log message details
       logger.log(
-        `📤 Sending to Mac: ${message.category}:${message.action}, header: 4 bytes, payload: ${jsonData.length} bytes, total: ${fullData.length} bytes`
+        `📤 Sending to client: ${message.category}:${message.action}, header: 4 bytes, payload: ${jsonData.length} bytes, total: ${fullData.length} bytes`
       );
       logger.log(`📋 Message ID being sent: ${message.id}`);
       logger.debug(`📝 Message content: ${jsonStr.substring(0, 200)}...`);
@@ -558,7 +568,7 @@ export class ControlUnixHandler {
       }
 
       if (jsonData.length > 65536) {
-        logger.warn(`⚠️ Large message to Mac: ${jsonData.length} bytes`);
+        logger.warn(`⚠️ Large message to client: ${jsonData.length} bytes`);
       }
 
       // Write with error handling
@@ -594,4 +604,5 @@ export class ControlUnixHandler {
   }
 }
 
-export const controlUnixHandler = new ControlUnixHandler();
+export const controlIpcHandler = new ControlIpcHandler();
+export const controlUnixHandler = controlIpcHandler; // Alias for backward compatibility

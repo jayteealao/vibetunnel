@@ -48,7 +48,7 @@ import { WsV3Hub } from './services/ws-v3-hub.js';
 import { closeLogger, createLogger, initLogger, setDebugMode } from './utils/logger.js';
 import { VapidManager } from './utils/vapid-manager.js';
 import { getVersionInfo, printVersionBanner } from './version.js';
-import { controlUnixHandler } from './websocket/control-unix-handler.js';
+import { controlIpcHandler } from './websocket/control-ipc-handler.js';
 
 // Extended WebSocket request with authentication and routing info
 interface WebSocketRequest extends http.IncomingMessage {
@@ -1154,11 +1154,11 @@ export async function createApp(): Promise<AppInstance> {
 
   // Initialize control socket
   try {
-    await controlUnixHandler.start();
-    logger.log(chalk.green('Control UNIX socket: READY'));
+    await controlIpcHandler.start();
+    logger.log(chalk.green('Control IPC handler: READY'));
   } catch (error) {
-    logger.error('Failed to initialize control socket:', error);
-    logger.warn('Mac control features will not be available.');
+    logger.error('Failed to initialize control IPC handler:', error);
+    logger.warn('Native app control features will not be available.');
     // Depending on the desired behavior, you might want to exit here
     // For now, we'll let the server continue without these features.
   }
@@ -1748,8 +1748,8 @@ export async function startVibeTunnelServer() {
 
       // Stop UNIX socket server
       try {
-        const { controlUnixHandler } = await import('./websocket/control-unix-handler.js');
-        controlUnixHandler.stop();
+        const { controlIpcHandler } = await import('./websocket/control-ipc-handler.js');
+        controlIpcHandler.stop();
         logger.debug('Stopped UNIX socket server');
       } catch (_error) {
         // Ignore if module not loaded

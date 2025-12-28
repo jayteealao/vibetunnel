@@ -25,7 +25,7 @@ import { createLogger } from './utils/logger.js';
 import { prettifyPath } from './utils/path-prettify.js';
 import { BUILD_DATE, VERSION } from './version.js';
 import { createControlEvent } from './websocket/control-protocol.js';
-import { controlUnixHandler } from './websocket/control-unix-handler.js';
+import { controlIpcHandler } from './websocket/control-ipc-handler.js';
 
 const logger = createLogger('api-socket');
 const execFile = promisify(require('child_process').execFile);
@@ -394,14 +394,14 @@ export class ApiSocketServer {
           }
         }
 
-        // Send notification to Mac app
-        if (controlUnixHandler.isMacAppConnected()) {
+        // Send notification to native app
+        if (controlIpcHandler.isClientConnected()) {
           const notification = createControlEvent('system', 'notification', {
             level: 'info',
             title: 'Follow Mode Enabled',
             message: `Now following ${displayName} in ${path.basename(absoluteMainRepo)}`,
           });
-          controlUnixHandler.sendToMac(notification);
+          controlIpcHandler.sendToClient(notification);
         }
 
         const response: GitFollowResponse = {
@@ -452,14 +452,14 @@ export class ApiSocketServer {
           logger.info('Git hooks uninstalled successfully from main repository');
         }
 
-        // Send notification to Mac app
-        if (controlUnixHandler.isMacAppConnected()) {
+        // Send notification to native app
+        if (controlIpcHandler.isClientConnected()) {
           const notification = createControlEvent('system', 'notification', {
             level: 'info',
             title: 'Follow Mode Disabled',
             message: `Follow mode disabled in ${path.basename(absoluteMainRepo)}`,
           });
-          controlUnixHandler.sendToMac(notification);
+          controlIpcHandler.sendToClient(notification);
         }
 
         const response: GitFollowResponse = {

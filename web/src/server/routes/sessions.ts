@@ -16,7 +16,7 @@ import { createLogger } from '../utils/logger.js';
 import { resolveAbsolutePath } from '../utils/path-utils.js';
 import { generateSessionName } from '../utils/session-naming.js';
 import { createControlMessage, type TerminalSpawnResponse } from '../websocket/control-protocol.js';
-import { controlUnixHandler } from '../websocket/control-unix-handler.js';
+import { controlIpcHandler } from '../websocket/control-ipc-handler.js';
 
 const logger = createLogger('sessions');
 const _execFile = promisify(require('child_process').execFile);
@@ -54,7 +54,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
     logger.debug('[GET /server/status] Getting server status');
     try {
       const status: ServerStatus = {
-        macAppConnected: controlUnixHandler.isMacAppConnected(),
+        macAppConnected: controlIpcHandler.isClientConnected(),
         isHQMode,
         version: process.env.VERSION || 'unknown',
       };
@@ -1215,12 +1215,12 @@ export async function requestTerminalSpawn(params: {
     logger.debug(`requesting terminal spawn via control socket for session ${params.sessionId}`);
 
     // Send the message and wait for response
-    const response = await controlUnixHandler.sendControlMessage(message);
+    const response = await controlIpcHandler.sendControlMessage(message);
 
     if (!response) {
       return {
         success: false,
-        error: 'No response from Mac app',
+        error: 'No response from native app',
       };
     }
 

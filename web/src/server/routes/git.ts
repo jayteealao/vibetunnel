@@ -7,7 +7,7 @@ import { isWorktree } from '../utils/git-utils.js';
 import { createLogger } from '../utils/logger.js';
 import { resolveAbsolutePath } from '../utils/path-utils.js';
 import { createControlEvent } from '../websocket/control-protocol.js';
-import { controlUnixHandler } from '../websocket/control-unix-handler.js';
+import { controlIpcHandler } from '../websocket/control-ipc-handler.js';
 
 const logger = createLogger('git-routes');
 const execFile = promisify(require('child_process').execFile);

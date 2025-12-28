@@ -5,7 +5,7 @@ import { createGitError, type GitError, isGitConfigNotFoundError } from '../util
 import { areHooksInstalled, installGitHooks, uninstallGitHooks } from '../utils/git-hooks.js';
 import { createLogger } from '../utils/logger.js';
 import { createControlEvent } from '../websocket/control-protocol.js';
-import { controlUnixHandler } from '../websocket/control-unix-handler.js';
+import { controlIpcHandler } from '../websocket/control-ipc-handler.js';
 
 const logger = createLogger('worktree-routes');
 const execFile = promisify(require('child_process').execFile);
@@ -637,14 +637,14 @@ export function createWorktreeRoutes(): Router {
           // Don't fail follow mode enable if branch switch fails
         }
 
-        // Send notification to Mac app
-        if (controlUnixHandler.isMacAppConnected()) {
+        // Send notification to native app
+        if (controlIpcHandler.isClientConnected()) {
           const notification = createControlEvent('system', 'notification', {
             level: 'info',
             title: 'Follow Mode Enabled',
             message: `Now following branch '${branch}' in ${path.basename(absoluteRepoPath)}`,
           });
-          controlUnixHandler.sendToMac(notification);
+          controlIpcHandler.sendToClient(notification);
         }
 
         return res.json({
@@ -674,14 +674,14 @@ export function createWorktreeRoutes(): Router {
 
         logger.info('Follow mode disabled');
 
-        // Send notification to Mac app
-        if (controlUnixHandler.isMacAppConnected()) {
+        // Send notification to native app
+        if (controlIpcHandler.isClientConnected()) {
           const notification = createControlEvent('system', 'notification', {
             level: 'info',
             title: 'Follow Mode Disabled',
             message: `Follow mode has been disabled for ${path.basename(absoluteRepoPath)}`,
           });
-          controlUnixHandler.sendToMac(notification);
+          controlIpcHandler.sendToClient(notification);
         }
 
         return res.json({

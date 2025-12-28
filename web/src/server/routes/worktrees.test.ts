@@ -1,6 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { controlIpcHandler } from '../websocket/control-ipc-handler.js';
 
 interface Worktree {
   path: string;
@@ -38,8 +39,12 @@ vi.mock('../utils/git-hooks.js', () => ({
 }));
 
 // Mock control unix handler
-vi.mock('../websocket/control-unix-handler.js', () => ({
-  controlUnixHandler: {
+vi.mock('../websocket/control-ipc-handler.js', () => ({
+  controlIpcHandler: {
+    isClientConnected: vi.fn().mockReturnValue(false),
+    sendToClient: vi.fn(),
+  },
+  controlUnixHandler: { // Legacy export
     isMacAppConnected: vi.fn().mockReturnValue(false),
     sendToMac: vi.fn(),
   },
@@ -323,6 +328,8 @@ branch refs/heads/main
       // Mock checkout
       mockExecFile.mockResolvedValueOnce({ stdout: '', stderr: '' });
 
+      vi.mocked(controlIpcHandler.isClientConnected).mockReturnValue(true);
+
       const response = await request(app).post('/api/worktrees/follow').send({
         repoPath: '/home/user/project',
         branch: 'main',
@@ -336,10 +343,22 @@ branch refs/heads/main
         message: 'Follow mode enabled',
         branch: 'main',
       });
+
+      expect(controlIpcHandler.sendToClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: 'system',
+          action: 'notification',
+          payload: expect.objectContaining({
+            title: 'Follow Mode Enabled',
+          }),
+        })
+      );
     });
 
     it('should disable follow mode', async () => {
       mockExecFile.mockResolvedValueOnce({ stdout: '', stderr: '' });
+
+      vi.mocked(controlIpcHandler.isClientConnected).mockReturnValue(true);
 
       const response = await request(app).post('/api/worktrees/follow').send({
         repoPath: '/home/user/project',
@@ -353,6 +372,16 @@ branch refs/heads/main
         enabled: false,
         message: 'Follow mode disabled',
       });
+
+      expect(controlIpcHandler.sendToClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: 'system',
+          action: 'notification',
+          payload: expect.objectContaining({
+            title: 'Follow Mode Disabled',
+          }),
+        })
+      );
     });
 
     it('should handle config unset when already disabled', async () => {

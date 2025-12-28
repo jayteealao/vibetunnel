@@ -53,8 +53,12 @@ vi.mock('../websocket/control-protocol', () => ({
   createControlEvent: vi.fn(),
 }));
 
-vi.mock('../websocket/control-unix-handler', () => ({
-  controlUnixHandler: {
+vi.mock('../websocket/control-ipc-handler.js', () => ({
+  controlIpcHandler: {
+    isClientConnected: vi.fn(() => false),
+    sendToClient: vi.fn(),
+  },
+  controlUnixHandler: { // Legacy export
     isMacAppConnected: vi.fn(() => false),
     sendToMac: vi.fn(),
   },
