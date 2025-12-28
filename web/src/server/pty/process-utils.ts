@@ -9,6 +9,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { getDefaultShell } from '../utils/shell-detection.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('process-utils');
@@ -411,106 +412,13 @@ export function resolveCommand(command: string[]): {
  * Falls back to sensible defaults if SHELL env var is not set
  */
 export function getUserShell(): string {
-  // First try SHELL environment variable (most reliable on Unix)
-  if (process.env.SHELL) {
-    return process.env.SHELL;
-  }
+  // Use the new comprehensive shell detection utility
+  const defaultShell = getDefaultShell();
 
-  // Platform-specific defaults
-  if (process.platform === 'win32') {
-    // Check for modern shells first
+  logger.debug(`Detected default shell: ${defaultShell.name} at ${defaultShell.path}`);
 
-    // 1. Check for PowerShell Core (pwsh) - cross-platform version
-    try {
-      const result = spawnSync('pwsh', ['-Command', 'echo test'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        timeout: 1000,
-      });
-      if (result.status === 0) {
-        return 'pwsh';
-      }
-    } catch (_) {
-      // PowerShell Core not available
-    }
+  return defaultShell.path;
 
-    // 2. Check for Windows PowerShell (older, Windows-only)
-    const powershellPath = path.join(
-      process.env.SystemRoot || 'C:\\Windows',
-      'System32',
-      'WindowsPowerShell',
-      'v1.0',
-      'powershell.exe'
-    );
-    try {
-      const result = spawnSync(powershellPath, ['-Command', 'echo test'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        timeout: 1000,
-      });
-      if (result.status === 0) {
-        return powershellPath;
-      }
-    } catch (_) {
-      // PowerShell not available
-    }
-
-    // 3. Check for Git Bash if available
-    const gitBashPaths = [
-      'C:\\Program Files\\Git\\bin\\bash.exe',
-      'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
-      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
-    ];
-    for (const gitBashPath of gitBashPaths) {
-      try {
-        const result = spawnSync(gitBashPath, ['-c', 'echo test'], {
-          encoding: 'utf8',
-          windowsHide: true,
-          timeout: 1000,
-        });
-        if (result.status === 0) {
-          return gitBashPath;
-        }
-      } catch (_) {
-        // Git Bash not at this location
-      }
-    }
-
-    // 4. Fall back to cmd.exe
-    return process.env.ComSpec || 'cmd.exe';
-  } else {
-    // Unix-like systems
-    // Node.js os.userInfo() includes shell on some platforms
-    try {
-      const userInfo = os.userInfo();
-      if ('shell' in userInfo && userInfo.shell) {
-        return userInfo.shell as string;
-      }
-    } catch (_) {
-      // userInfo might fail in some environments
-    }
-
-    // Check common shell paths in order of preference
-    // Prefer bash over zsh to avoid first-run configuration issues in CI
-    const commonShells = ['/bin/bash', '/usr/bin/bash', '/bin/zsh', '/usr/bin/zsh', '/bin/sh'];
-    for (const shell of commonShells) {
-      try {
-        // Just check if the shell exists and is executable
-        const result = spawnSync('test', ['-x', shell], {
-          encoding: 'utf8',
-          timeout: 500,
-        });
-        if (result.status === 0) {
-          return shell;
-        }
-      } catch (_) {
-        // test command failed, try next shell
-      }
-    }
-
-    // Final fallback - /bin/sh should always exist on Unix
-    return '/bin/sh';
-  }
 }
 
 // Re-export as object for backwards compatibility

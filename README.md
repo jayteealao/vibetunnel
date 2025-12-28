@@ -81,7 +81,7 @@ This gives you the full VibeTunnel server with web UI, just without the macOS me
 
 **macOS App**: Requires an Apple Silicon Mac (M1+). Intel Macs are not supported for the native app.
 
-**npm Package**: Works on any system with Node.js 22.12+, including Intel Macs and Linux. Windows is not yet supported ([#252](https://github.com/amantus-ai/vibetunnel/issues/252)).
+**npm Package**: Works on any system with Node.js 22.12+, including Intel Macs, Linux, and Windows. See [Windows Support](docs/WINDOWS_SUPPORT.md) for Windows-specific setup.
 
 ### 1. Download & Install
 

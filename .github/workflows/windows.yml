@@ -1,0 +1,240 @@
+name: Windows CI
+
+on:
+  workflow_call:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/windows.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  windows-ci:
+    name: Windows CI - Build, Test, Type Check
+    runs-on: windows-latest
+    env:
+      GITHUB_REPO_NAME: ${{ github.repository }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10
+        run_install: false
+
+    # Windows doesn't need PAM, uses environment auth
+    # No system dependencies required
+
+    - name: Get pnpm store directory
+      shell: pwsh
+      run: |
+        echo "STORE_PATH=$(pnpm store path --silent)" >> $env:GITHUB_ENV
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Cache TypeScript build info
+      uses: actions/cache@v4
+      continue-on-error: true
+      with:
+        path: |
+          web/dist/tsconfig.server.tsbuildinfo
+          web/public/tsconfig.client.tsbuildinfo
+          web/public/tsconfig.sw.tsbuildinfo
+        key: ${{ runner.os }}-tsbuild-${{ hashFiles('web/src/**/*.ts', 'web/tsconfig*.json') }}
+        restore-keys: |
+          ${{ runner.os }}-tsbuild-
+
+    - name: Install dependencies
+      working-directory: web
+      shell: pwsh
+      run: |
+        pnpm config set network-concurrency 4
+        pnpm config set child-concurrency 2
+        pnpm install --frozen-lockfile --prefer-offline
+
+    - name: Build node-pty (Windows ConPTY)
+      working-directory: web
+      shell: pwsh
+      run: |
+        cd node-pty
+        npm install
+        npm run build
+
+    - name: Run all checks
+      working-directory: web
+      shell: pwsh
+      run: |
+        # Create output directory
+        New-Item -ItemType Directory -Force -Path ci-outputs | Out-Null
+
+        # Run format check
+        Write-Host "Starting format check..."
+        pnpm run format:check > ci-outputs/format-output.txt 2>&1
+        $formatExitCode = $LASTEXITCODE
+        $formatExitCode | Out-File -FilePath ci-outputs/format-exit-code.txt
+        Write-Host "Format check completed with exit code: $formatExitCode"
+
+        # Run lint
+        Write-Host "Starting lint..."
+        pnpm run lint:biome > ci-outputs/lint-output.txt 2>&1
+        $lintExitCode = $LASTEXITCODE
+        $lintExitCode | Out-File -FilePath ci-outputs/lint-exit-code.txt
+        Write-Host "Lint completed with exit code: $lintExitCode"
+
+        # Run type check
+        Write-Host "Starting type check..."
+        pnpm run typecheck > ci-outputs/typecheck-output.txt 2>&1
+        $typecheckExitCode = $LASTEXITCODE
+        $typecheckExitCode | Out-File -FilePath ci-outputs/typecheck-exit-code.txt
+        Write-Host "Type check completed with exit code: $typecheckExitCode"
+
+        # Run security audit (don't fail on audit)
+        Write-Host "Starting security audit..."
+        pnpm audit --audit-level=moderate > ci-outputs/audit-output.txt 2>&1
+        $auditExitCode = 0  # Don't fail on audit
+        $auditExitCode | Out-File -FilePath ci-outputs/audit-exit-code.txt
+        Write-Host "Audit completed"
+
+        # Run build (required for tests)
+        Write-Host "Starting build..."
+        pnpm run build > ci-outputs/build-output.txt 2>&1
+        $buildExitCode = $LASTEXITCODE
+        $buildExitCode | Out-File -FilePath ci-outputs/build-exit-code.txt
+        Write-Host "Build completed with exit code: $buildExitCode"
+
+        # Run tests
+        Write-Host "Starting tests..."
+        pnpm test > ci-outputs/test-output.txt 2>&1
+        $testExitCode = $LASTEXITCODE
+        $testExitCode | Out-File -FilePath ci-outputs/test-exit-code.txt
+        Write-Host "Tests completed with exit code: $testExitCode"
+
+        # Check if any step failed
+        $allExitCodes = @($formatExitCode, $lintExitCode, $typecheckExitCode, $buildExitCode, $testExitCode)
+        $failedSteps = @()
+
+        if ($formatExitCode -ne 0) { $failedSteps += "format" }
+        if ($lintExitCode -ne 0) { $failedSteps += "lint" }
+        if ($typecheckExitCode -ne 0) { $failedSteps += "typecheck" }
+        if ($buildExitCode -ne 0) { $failedSteps += "build" }
+        if ($testExitCode -ne 0) { $failedSteps += "test" }
+
+        if ($failedSteps.Count -gt 0) {
+          Write-Host "❌ Failed steps: $($failedSteps -join ', ')"
+
+          # Show outputs of failed steps
+          foreach ($step in $failedSteps) {
+            Write-Host "`n=== $step output ==="
+            Get-Content "ci-outputs/$step-output.txt" -ErrorAction SilentlyContinue
+          }
+
+          exit 1
+        } else {
+          Write-Host "✅ All checks passed"
+        }
+
+    - name: Run coverage
+      if: always()
+      working-directory: web
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        Write-Host "Running coverage tests..."
+        pnpm run test:coverage
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-ci-outputs
+        path: web/ci-outputs/
+        retention-days: 7
+
+    - name: Upload coverage
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-coverage
+        path: web/coverage/
+        retention-days: 7
+        if-no-files-found: ignore
+
+  windows-native-build:
+    name: Build Windows Native Modules
+    runs-on: windows-latest
+    needs: windows-ci
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10
+
+    - name: Install Visual Studio Build Tools
+      shell: pwsh
+      run: |
+        # Check if VS Build Tools are already installed
+        $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path $vsWhere) {
+          Write-Host "Visual Studio Build Tools already installed"
+          & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Workload.VCTools
+        } else {
+          Write-Host "Installing Visual Studio Build Tools..."
+          choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --quiet" -y
+        }
+
+    - name: Build native modules
+      working-directory: web
+      shell: pwsh
+      run: |
+        pnpm install --frozen-lockfile
+        cd node-pty
+        npm install
+        npm run build
+
+    - name: Test native module loading
+      working-directory: web
+      shell: pwsh
+      run: |
+        node -e "const pty = require('./node-pty'); console.log('ConPTY module loaded successfully'); console.log('Available:', Object.keys(pty));"
+
+    - name: Upload native modules
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-native-modules
+        path: |
+          web/node-pty/build/
+          web/node-pty/lib/
+        retention-days: 7

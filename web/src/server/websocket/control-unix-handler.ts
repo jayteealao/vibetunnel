@@ -4,6 +4,8 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { WebSocket } from 'ws';
+import { IPCFactory } from '../ipc/ipc-factory.js';
+import type { IPCTransport } from '../ipc/ipc-transport.js';
 import { createLogger } from '../utils/logger.js';
 import type {
   ControlCategory,
@@ -13,7 +15,7 @@ import type {
 } from './control-protocol.js';
 import { createControlEvent, createControlResponse } from './control-protocol.js';
 
-const logger = createLogger('control-unix');
+const logger = createLogger('control-ipc');
 
 interface MessageHandler {
   handleMessage(message: ControlMessage): Promise<ControlMessage | null>;
@@ -95,20 +97,21 @@ class SystemHandler implements MessageHandler {
 }
 
 /**
- * Handles Unix domain socket communication between the VibeTunnel web server and macOS app.
+ * Handles cross-platform IPC communication between the VibeTunnel web server and native app.
  *
- * This class manages a Unix socket server that provides bidirectional communication
- * between the web server and the native macOS application. It implements a message-based
- * protocol with length-prefixed framing for reliable message delivery and supports
- * multiple message categories including terminal control and system events.
+ * This class manages platform-specific IPC (Unix sockets on macOS/Linux, Named Pipes on Windows)
+ * that provides bidirectional communication between the web server and the native application.
+ * It implements a message-based protocol with length-prefixed framing for reliable message
+ * delivery and supports multiple message categories including terminal control and system events.
  *
  * Key features:
- * - Unix domain socket server with automatic cleanup on restart
+ * - Cross-platform IPC (Unix sockets on macOS/Linux, Named Pipes on Windows)
+ * - Automatic cleanup on restart
  * - Length-prefixed binary protocol for message framing
  * - Message routing based on categories (terminal, system)
  * - Request/response pattern with timeout support
  * - WebSocket bridge for browser clients
- * - Automatic socket permission management (0600)
+ * - Automatic permission management (Unix sockets only)
  *
  * @example
  * ```typescript
@@ -116,7 +119,7 @@ class SystemHandler implements MessageHandler {
  * const handler = new ControlUnixHandler();
  * await handler.start();
  *
- * // Check if Mac app is connected
+ * // Check if native app is connected
  * if (handler.isMacAppConnected()) {
  *   // Send a control message
  *   const response = await handler.sendControlMessage({
@@ -140,26 +143,25 @@ class SystemHandler implements MessageHandler {
  */
 export class ControlUnixHandler {
   private pendingRequests = new Map<string, (response: ControlMessage) => void>();
-  private macSocket: net.Socket | null = null;
-  private unixServer: net.Server | null = null;
-  private readonly socketPath: string;
+  private clientSocket: net.Socket | null = null;
+  private transport: IPCTransport;
   private handlers = new Map<ControlCategory, MessageHandler>();
   private messageBuffer = Buffer.alloc(0);
 
   constructor() {
     // Use control directory from environment or default
-    const home = process.env.HOME || '/tmp';
+    const home = process.env.HOME || process.env.USERPROFILE || '/tmp';
     const controlDir = process.env.VIBETUNNEL_CONTROL_DIR || path.join(home, '.vibetunnel');
-    const socketDir = controlDir;
 
-    // Ensure directory exists
-    try {
-      fs.mkdirSync(socketDir, { recursive: true });
-    } catch (_e) {
-      // Ignore if already exists
-    }
+    // Create cross-platform IPC transport
+    this.transport = IPCFactory.createTransport({
+      name: 'control',
+      socketDir: controlDir,
+      permissions: 0o600,
+    });
 
-    this.socketPath = path.join(socketDir, 'control.sock');
+    logger.log(`Control IPC handler initialized for ${IPCFactory.getPlatformName()}`);
+    logger.log(`IPC path: ${this.transport.getPath()}`);
 
     // Initialize handlers
     this.handlers.set('terminal', new TerminalHandler());
@@ -167,85 +169,53 @@ export class ControlUnixHandler {
   }
 
   async start(): Promise<void> {
-    logger.log('🚀 Starting control Unix socket handler');
-    logger.log(`📂 Socket path: ${this.socketPath}`);
+    logger.log(`🚀 Starting control IPC handler on ${IPCFactory.getPlatformName()}`);
+    logger.log(`📂 IPC path: ${this.transport.getPath()}`);
 
-    // Clean up any existing socket file to prevent EADDRINUSE errors on restart.
-    try {
-      if (fs.existsSync(this.socketPath)) {
-        fs.unlinkSync(this.socketPath);
-        logger.log('🧹 Removed existing stale socket file.');
-      } else {
-        logger.log('✅ No existing socket file found');
-      }
-    } catch (error) {
-      logger.warn('⚠️ Failed to remove stale socket file:', error);
-    }
-
-    // Create UNIX socket server
-    this.unixServer = net.createServer((socket) => {
+    // Set up connection handler
+    this.transport.onConnection((socket) => {
       this.handleMacConnection(socket);
     });
 
-    // Start listening
-    await new Promise<void>((resolve, reject) => {
-      this.unixServer?.listen(this.socketPath, () => {
-        logger.log(`Control UNIX socket server listening at ${this.socketPath}`);
-
-        // Set restrictive permissions - only owner can read/write
-        fs.chmod(this.socketPath, 0o600, (err) => {
-          if (err) {
-            logger.error('Failed to set socket permissions:', err);
-          } else {
-            logger.log('Socket permissions set to 0600 (owner read/write only)');
-          }
-        });
-
-        resolve();
-      });
-
-      this.unixServer?.on('error', (error) => {
-        logger.error('UNIX socket server error:', error);
-        reject(error);
-      });
+    // Set up error handler
+    this.transport.onError((error) => {
+      logger.error('IPC transport error:', error);
     });
+
+    // Start the transport
+    await this.transport.start();
+
+    logger.log('✅ Control IPC handler started successfully');
   }
 
   stop(): void {
-    if (this.macSocket) {
-      this.macSocket.destroy();
-      this.macSocket = null;
+    logger.log('🛑 Stopping control IPC handler');
+
+    if (this.clientSocket) {
+      this.clientSocket.destroy();
+      this.clientSocket = null;
     }
 
-    if (this.unixServer) {
-      this.unixServer.close();
-      this.unixServer = null;
-    }
-
-    // Clean up socket file
-    try {
-      fs.unlinkSync(this.socketPath);
-    } catch (_error) {
-      // Ignore
-    }
+    this.transport.stop();
+    logger.log('✅ Control IPC handler stopped');
   }
 
   isMacAppConnected(): boolean {
-    return this.macSocket !== null && !this.macSocket.destroyed;
+    return this.transport.isConnected();
   }
 
   private handleMacConnection(socket: net.Socket) {
-    logger.log('🔌 New Mac connection via UNIX socket');
+    logger.log('🔌 New client connection via IPC');
     logger.log(`🔍 Socket info: local=${socket.localAddress}, remote=${socket.remoteAddress}`);
 
-    // Close any existing Mac connection
-    if (this.macSocket) {
-      logger.log('⚠️ Closing existing Mac connection');
-      this.macSocket.destroy();
+    // Close any existing connection
+    if (this.clientSocket) {
+      logger.log('⚠️ Closing existing client connection');
+      this.clientSocket.destroy();
     }
 
-    this.macSocket = socket;
-    logger.log('✅ Mac socket stored');
+    this.clientSocket = socket;
+    logger.log('✅ Client socket stored');
 
     // Set socket options for better handling of large messages
     socket.setNoDelay(true); // Disable Nagle's algorithm for lower latency
@@ -365,8 +335,8 @@ export class ControlUnixHandler {
         `📊 Socket state: destroyed=${socket.destroyed}, readable=${socket.readable}, writable=${socket.writable}`
       );
 
-      if (socket === this.macSocket) {
-        this.macSocket = null;
+      if (socket === this.clientSocket) {
+        this.clientSocket = null;
         logger.log('🧹 Cleared Mac socket reference');
       }
     });
@@ -391,7 +361,7 @@ export class ControlUnixHandler {
     logger.log('🌐 New browser WebSocket connection for control messages');
     logger.log(`👤 User ID: ${userId || 'unknown'}`);
     logger.log(
-      `🔌 Mac socket status on browser connect: ${this.macSocket ? 'CONNECTED' : 'NOT CONNECTED'}`
+      `🔌 Client socket status on browser connect: ${this.clientSocket ? 'CONNECTED' : 'NOT CONNECTED'}`
     );
 
     ws.on('message', async (data) => {
@@ -527,8 +497,8 @@ export class ControlUnixHandler {
       sessionName?: string;
     }
   ): void {
-    if (!this.macSocket) {
-      logger.warn('[ControlUnixHandler] Cannot send notification - Mac app not connected');
+    if (!this.clientSocket) {
+      logger.warn('[ControlUnixHandler] Cannot send notification - native app not connected');
       return;
     }
 
@@ -549,14 +519,14 @@ export class ControlUnixHandler {
   }
 
   sendToMac(message: ControlMessage): void {
-    if (!this.macSocket) {
-      logger.warn('⚠️ Cannot send to Mac - no socket connection');
+    if (!this.clientSocket) {
+      logger.warn('⚠️ Cannot send to client - no socket connection');
       return;
     }
 
-    if (this.macSocket.destroyed) {
-      logger.warn('⚠️ Cannot send to Mac - socket is destroyed');
-      this.macSocket = null;
+    if (this.clientSocket.destroyed) {
+      logger.warn('⚠️ Cannot send to client - socket is destroyed');
+      this.clientSocket = null;
       return;
     }
 
@@ -592,9 +562,9 @@ export class ControlUnixHandler {
       }
 
       // Write with error handling
-      const result = this.macSocket.write(fullData, (error) => {
+      const result = this.clientSocket.write(fullData, (error) => {
         if (error) {
-          logger.error('❌ Error writing to Mac socket:', error);
+          logger.error('❌ Error writing to client socket:', error);
           logger.error('Error details:', {
             // biome-ignore lint/suspicious/noExplicitAny: error object has non-standard properties
             code: (error as any).code,
@@ -603,10 +573,10 @@ export class ControlUnixHandler {
             message: error.message,
           });
           // Close the connection on write error
-          this.macSocket?.destroy();
-          this.macSocket = null;
+          this.clientSocket?.destroy();
+          this.clientSocket = null;
         } else {
-          logger.debug('✅ Write to Mac socket completed successfully');
+          logger.debug('✅ Write to client socket completed successfully');
         }
       });
 
@@ -617,9 +587,9 @@ export class ControlUnixHandler {
         logger.debug('✅ Write immediate - no backpressure');
       }
     } catch (error) {
-      logger.error('❌ Exception while sending to Mac:', error);
-      this.macSocket?.destroy();
-      this.macSocket = null;
+      logger.error('❌ Exception while sending to client:', error);
+      this.clientSocket?.destroy();
+      this.clientSocket = null;
     }
   }
 }

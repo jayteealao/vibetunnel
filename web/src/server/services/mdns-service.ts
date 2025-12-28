@@ -8,6 +8,17 @@ import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('mdns-service');
 
+/**
+ * Cross-platform mDNS/Bonjour service discovery
+ *
+ * Uses bonjour-service which works on:
+ * - macOS: Native Bonjour support
+ * - Linux: Avahi daemon
+ * - Windows: Bonjour for Windows (Apple's mDNSResponder)
+ *
+ * Note: On Windows, users may need to install Bonjour for Windows
+ * if it's not already present (often installed with iTunes or other Apple software)
+ */
 export class MDNSService {
   // biome-ignore lint/suspicious/noExplicitAny: bonjour-service doesn't export proper types
   private bonjour: any = null;
