@@ -771,8 +771,16 @@ export class PtyManager extends EventEmitter {
 
   /**
    * Setup Unix socket for all IPC communication
+   * TODO: Implement Named Pipe support for Windows to enable `vt` CLI
    */
   private setupIPCSocket(session: PtySession): void {
+    // Skip IPC socket on Windows - not yet supported
+    // Web-based terminal sessions work without it; only the `vt` CLI requires IPC
+    if (process.platform === 'win32') {
+      logger.debug(`Skipping IPC socket on Windows for session ${session.id}`);
+      return;
+    }
+
     const ptyProcess = session.ptyProcess;
     if (!ptyProcess) {
       logger.error(`No PTY process found for session ${session.id}`);

@@ -83,8 +83,16 @@ export class ApiSocketServer {
 
   /**
    * Start the API socket server
+   * TODO: Implement Named Pipe support for Windows to enable full CLI integration
    */
   async start(): Promise<void> {
+    // Skip on Windows - Unix sockets not supported, need Named Pipes
+    // The web server still works; only CLI tools like `vt status` won't work
+    if (process.platform === 'win32') {
+      logger.log('Skipping API socket server on Windows (not yet supported)');
+      return;
+    }
+
     // Clean up any existing socket
     try {
       fs.unlinkSync(this.socketPath);
