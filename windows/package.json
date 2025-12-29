@@ -1,0 +1,31 @@
+{
+  "name": "vibetunnel-windows",
+  "version": "1.0.0",
+  "description": "VibeTunnel Windows distribution (Service + Tray + Installer)",
+  "scripts": {
+    "install:service": "cd service && npm install",
+    "install:tray": "cd tray && npm install",
+    "install:all": "npm run install:service && npm run install:tray",
+    "dev:service": "cd service && node index.js",
+    "dev:tray": "cd tray && npm start",
+    "build": "cd installer && node build-installer.js",
+    "build:fast": "cd installer && node build-installer.js --skip-web",
+    "service:install": "cd service && node install.js",
+    "service:uninstall": "cd service && node uninstall.js",
+    "clean": "rm -rf service/node_modules tray/node_modules tray/dist installer/dist"
+  },
+  "keywords": [
+    "vibetunnel",
+    "windows",
+    "service",
+    "tray",
+    "installer"
+  ],
+  "author": "VibeTunnel",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amantus-ai/vibetunnel.git",
+    "directory": "windows"
+  }
+}

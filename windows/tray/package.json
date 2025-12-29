@@ -1,0 +1,68 @@
+{
+  "name": "vibetunnel-tray",
+  "version": "1.0.0",
+  "description": "VibeTunnel system tray application",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win --x64",
+    "build:msi": "electron-builder --win --x64 msi",
+    "pack": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.vibetunnel.tray",
+    "productName": "VibeTunnel",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "msi",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VibeTunnel",
+      "runAfterFinish": true
+    },
+    "msi": {
+      "oneClick": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../service",
+        "to": "service",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0",
+    "node-windows": "^1.0.0-beta.8"
+  },
+  "devDependencies": {
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1"
+  },
+  "keywords": ["vibetunnel", "tray", "electron"],
+  "author": "VibeTunnel",
+  "license": "MIT"
+}
