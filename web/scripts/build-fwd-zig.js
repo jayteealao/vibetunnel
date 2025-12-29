@@ -30,7 +30,9 @@ const pkgPath = path.join(webRoot, 'package.json');
 const pkg = fs.existsSync(pkgPath) ? JSON.parse(fs.readFileSync(pkgPath, 'utf8')) : {};
 const version = pkg.version || 'unknown';
 
-const zigOut = path.join(zigProject, 'zig-out', 'bin', 'vibetunnel-fwd');
+const isWindows = process.platform === 'win32';
+const exeExtension = isWindows ? '.exe' : '';
+const zigOut = path.join(zigProject, 'zig-out', 'bin', `vibetunnel-fwd${exeExtension}`);
 const nativeOutDir = path.join(webRoot, 'native');
 const binOutDir = path.join(webRoot, 'bin');
 
@@ -65,13 +67,17 @@ if (!fs.existsSync(zigOut)) {
 ensureDir(nativeOutDir);
 ensureDir(binOutDir);
 
-const nativeDest = path.join(nativeOutDir, 'vibetunnel-fwd');
-const binDest = path.join(binOutDir, 'vibetunnel-fwd');
+const nativeDest = path.join(nativeOutDir, `vibetunnel-fwd${exeExtension}`);
+const binDest = path.join(binOutDir, `vibetunnel-fwd${exeExtension}`);
 
 fs.copyFileSync(zigOut, nativeDest);
 fs.copyFileSync(zigOut, binDest);
-fs.chmodSync(nativeDest, 0o755);
-fs.chmodSync(binDest, 0o755);
+
+// chmod not needed on Windows (executability determined by extension)
+if (!isWindows) {
+  fs.chmodSync(nativeDest, 0o755);
+  fs.chmodSync(binDest, 0o755);
+}
 
 console.log(`✓ zig forwarder built: ${path.relative(repoRoot, nativeDest)}`);
 console.log(`✓ zig forwarder installed: ${path.relative(repoRoot, binDest)}`);

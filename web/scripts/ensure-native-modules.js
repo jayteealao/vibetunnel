@@ -66,17 +66,13 @@ if (fs.existsSync(symlinkNodePty) && fs.lstatSync(symlinkNodePty).isSymbolicLink
 console.log('Native modules are ready for tests');
 
 // Ensure zig forwarder exists (required now that Node forwarder is removed)
-// TODO: Implement zig forwarder for Windows to enable `vt` command support
 const webRoot = path.join(__dirname, '..');
-const nativeForwarderPath = path.join(webRoot, 'native', 'vibetunnel-fwd');
-const binForwarderPath = path.join(webRoot, 'bin', 'vibetunnel-fwd');
+const isWindows = process.platform === 'win32';
+const exeExtension = isWindows ? '.exe' : '';
+const nativeForwarderPath = path.join(webRoot, 'native', `vibetunnel-fwd${exeExtension}`);
+const binForwarderPath = path.join(webRoot, 'bin', `vibetunnel-fwd${exeExtension}`);
 
-// Skip zig forwarder on Windows - not yet supported
-// The web server works without it; only the `vt` CLI wrapper requires it
-if (process.platform === 'win32') {
-  console.log('Skipping zig forwarder on Windows (not yet supported)');
-  console.log('Web-based terminal sessions will work; `vt` command will not be available');
-} else if (!fs.existsSync(nativeForwarderPath) || !fs.existsSync(binForwarderPath)) {
+if (!fs.existsSync(nativeForwarderPath) || !fs.existsSync(binForwarderPath)) {
   console.log('zig forwarder not found, building...');
 
   try {
