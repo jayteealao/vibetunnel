@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 
 const asciinema_mod = @import("asciinema.zig");
@@ -11,12 +12,22 @@ const title_mod = @import("title.zig");
 const title_filter_mod = @import("title_filter.zig");
 const build_options = @import("build_options");
 
-const c = @cImport({
+// Platform-specific imports
+const is_windows = builtin.os.tag == .windows;
+const main_platform = if (is_windows)
+    @import("main_windows.zig")
+else
+    struct {};
+
+const c = if (!is_windows) @cImport({
     @cInclude("termios.h");
     @cInclude("signal.h");
     @cInclude("sys/stat.h");
     @cInclude("sys/ioctl.h");
-});
+}) else struct {
+    // Stub for Windows
+    const termios = extern struct {};
+};
 
 const TitleMode = enum {
     none,
@@ -60,7 +71,7 @@ const SessionContext = struct {
     last_rows: u16,
 };
 
-const RawMode = struct {
+const RawMode = if (!is_windows) struct {
     fd: posix.fd_t,
     orig: c.termios,
 
@@ -75,6 +86,32 @@ const RawMode = struct {
 
     fn restore(self: *RawMode) void {
         _ = c.tcsetattr(self.fd, c.TCSANOW, &self.orig);
+    }
+} else struct {
+    // Windows: Console mode handling
+    handle: std.os.windows.HANDLE,
+    orig_mode: u32,
+
+    fn enable(handle: std.os.windows.HANDLE) !RawMode {
+        var mode: u32 = undefined;
+        if (std.os.windows.kernel32.GetConsoleMode(handle, &mode) == 0) {
+            return error.TermiosFailed;
+        }
+        const orig_mode = mode;
+
+        // Enable virtual terminal input
+        const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
+        mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+        if (std.os.windows.kernel32.SetConsoleMode(handle, mode) == 0) {
+            return error.TermiosFailed;
+        }
+
+        return .{ .handle = handle, .orig_mode = orig_mode };
+    }
+
+    fn restore(self: *RawMode) void {
+        _ = std.os.windows.kernel32.SetConsoleMode(self.handle, self.orig_mode);
     }
 };
 
@@ -259,38 +296,52 @@ pub fn main() !void {
     );
 
     const winsize = pty_mod.winsize{ .ws_col = initial_cols, .ws_row = initial_rows, .ws_xpixel = 0, .ws_ypixel = 0 };
-    var pty = try pty_mod.Pty.open(winsize);
+    var pty = try pty_mod.open(allocator, winsize);
 
-    var exec_env = try buildExecEnv(allocator, command, session_id);
-    const pid = posix.fork() catch |err| {
-        logger.logError("failed to fork: {s}", .{@errorName(err)});
+    const pid: i32 = if (is_windows) blk: {
+        // Windows: Use CreateProcess with ConPTY
+        var env_map = try std.process.getEnvMap(allocator);
+        defer env_map.deinit();
+        try env_map.put("TERM", "xterm-256color");
+        try env_map.put("VIBETUNNEL_SESSION_ID", session_id);
+
+        const proc_info = try main_platform.spawnProcess(allocator, &pty, command, cwd, &env_map, &logger);
+        break :blk @intCast(proc_info.process_id);
+    } else blk: {
+        // Unix: Use fork/exec
+        var exec_env = try buildExecEnv(allocator, command, session_id);
+        const unix_pid = posix.fork() catch |err| {
+            logger.logError("failed to fork: {s}", .{@errorName(err)});
+            exec_env.deinit();
+            return err;
+        };
+
+        if (unix_pid == 0) {
+            _ = posix.close(pty.master);
+            _ = posix.setsid() catch {};
+            _ = c.ioctl(pty.slave, pty_mod.TIOCSCTTY, @as(c_ulong, 0));
+            _ = posix.dup2(pty.slave, 0) catch {};
+            _ = posix.dup2(pty.slave, 1) catch {};
+            _ = posix.dup2(pty.slave, 2) catch {};
+            _ = posix.close(pty.slave);
+
+            _ = posix.chdir(cwd) catch {};
+
+            _ = posix.execvpeZ(exec_env.argv[0].?, exec_env.argv.ptr, exec_env.envp.ptr) catch {};
+            posix.exit(127);
+        }
+
         exec_env.deinit();
-        return err;
-    };
 
-    if (pid == 0) {
-        _ = posix.close(pty.master);
-        _ = posix.setsid() catch {};
-        _ = c.ioctl(pty.slave, pty_mod.TIOCSCTTY, @as(c_ulong, 0));
-        _ = posix.dup2(pty.slave, 0) catch {};
-        _ = posix.dup2(pty.slave, 1) catch {};
-        _ = posix.dup2(pty.slave, 2) catch {};
         _ = posix.close(pty.slave);
+        pty.slave = -1;
 
-        _ = posix.chdir(cwd) catch {};
-
-        _ = posix.execvpeZ(exec_env.argv[0].?, exec_env.argv.ptr, exec_env.envp.ptr) catch {};
-        posix.exit(127);
-    }
-
-    exec_env.deinit();
-
-    _ = posix.close(pty.slave);
-    pty.slave = -1;
+        break :blk @intCast(unix_pid);
+    };
 
     g_running.store(true, .release);
     g_signal.store(0, .release);
-    g_child_pid.store(@intCast(pid), .release);
+    g_child_pid.store(pid, .release);
 
     installSignalHandlers();
 
@@ -337,8 +388,14 @@ pub fn main() !void {
 
     var raw_mode: ?RawMode = null;
     const stdin_fd = std.fs.File.stdin().handle;
-    if (posix.isatty(stdin_fd)) {
-        raw_mode = RawMode.enable(stdin_fd) catch null;
+    if (is_windows) {
+        if (main_platform.isTerminal(stdin_fd)) {
+            raw_mode = RawMode.enable(stdin_fd) catch null;
+        }
+    } else {
+        if (posix.isatty(stdin_fd)) {
+            raw_mode = RawMode.enable(stdin_fd) catch null;
+        }
     }
 
     mainLoop(&ctx, stdin_fd) catch |err| {
@@ -468,6 +525,9 @@ fn isTruthy(value: []const u8) bool {
 
 
 fn getHome() []const u8 {
+    if (is_windows) {
+        return main_platform.getHomeDir();
+    }
     if (std.posix.getenv("HOME")) |val| return std.mem.sliceTo(val, 0);
     return "";
 }
@@ -519,13 +579,16 @@ fn determineInitialSize() !SizeInfo {
 fn ensureStdinPipe(path: []const u8) void {
     if (std.fs.cwd().statFile(path)) |_| return else |_| {}
 
-    const path_z = std.heap.c_allocator.dupeZ(u8, path) catch null;
-    defer if (path_z) |p| std.heap.c_allocator.free(p);
+    if (!is_windows) {
+        const path_z = std.heap.c_allocator.dupeZ(u8, path) catch null;
+        defer if (path_z) |p| std.heap.c_allocator.free(p);
 
-    if (path_z) |p| {
-        if (c.mkfifo(p, 0o600) == 0) return;
+        if (path_z) |p| {
+            if (c.mkfifo(p, 0o600) == 0) return;
+        }
     }
 
+    // Fallback to regular file (Windows doesn't have FIFOs)
     var file = std.fs.cwd().createFile(path, .{ .truncate = false, .read = false, .mode = 0o600 }) catch return;
     file.close();
 }
@@ -583,13 +646,17 @@ fn buildArgvZ(allocator: std.mem.Allocator, command: []const []const u8) ![:null
 }
 
 fn installSignalHandlers() void {
-    var sa = posix.Sigaction{
-        .handler = .{ .handler = handleSignal },
-        .mask = posix.sigemptyset(),
-        .flags = 0,
-    };
-    _ = posix.sigaction(posix.SIG.INT, &sa, null);
-    _ = posix.sigaction(posix.SIG.TERM, &sa, null);
+    if (is_windows) {
+        main_platform.installSignalHandlers() catch {};
+    } else {
+        var sa = posix.Sigaction{
+            .handler = .{ .handler = handleSignal },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        _ = posix.sigaction(posix.SIG.INT, &sa, null);
+        _ = posix.sigaction(posix.SIG.TERM, &sa, null);
+    }
 }
 
 fn handleSocketStdin(context: *anyopaque, data: []const u8) void {
@@ -640,11 +707,16 @@ fn writeToPty(ctx: *SessionContext, data: []const u8, record_input: bool) void {
     ctx.pty_mutex.lock();
     defer ctx.pty_mutex.unlock();
 
-    var offset: usize = 0;
-    while (offset < data.len) {
-        const written = posix.write(ctx.pty.master, data[offset..]) catch return;
-        if (written == 0) break;
-        offset += written;
+    if (is_windows) {
+        const written = main_platform.writeToPty(&ctx.pty, data) catch return;
+        _ = written;
+    } else {
+        var offset: usize = 0;
+        while (offset < data.len) {
+            const written = posix.write(ctx.pty.master, data[offset..]) catch return;
+            if (written == 0) break;
+            offset += written;
+        }
     }
 
     if (record_input) {
@@ -704,7 +776,14 @@ fn sessionWatcherThread(ctx: *SessionContext) void {
 
 fn resizeWatcherThread(ctx: *SessionContext) void {
     const stdout_fd = std.fs.File.stdout().handle;
-    if (!posix.isatty(stdout_fd)) return;
+
+    const is_tty = if (is_windows)
+        main_platform.isTerminal(stdout_fd)
+    else
+        posix.isatty(stdout_fd);
+
+    if (!is_tty) return;
+
     var last_cols = ctx.last_cols;
     var last_rows = ctx.last_rows;
 
@@ -718,7 +797,80 @@ fn resizeWatcherThread(ctx: *SessionContext) void {
     }
 }
 
-fn mainLoop(ctx: *SessionContext, stdin_fd: posix.fd_t) !void {
+fn mainLoop(ctx: *SessionContext, stdin_fd: if (is_windows) std.os.windows.HANDLE else posix.fd_t) !void {
+    if (is_windows) {
+        return mainLoopWindows(ctx, stdin_fd);
+    } else {
+        return mainLoopUnix(ctx, stdin_fd);
+    }
+}
+
+fn mainLoopWindows(ctx: *SessionContext, stdin_handle: std.os.windows.HANDLE) !void {
+    var buffer: [8192]u8 = undefined;
+    var filtered = std.ArrayList(u8).empty;
+    defer filtered.deinit(ctx.allocator);
+
+    // Use separate thread for stdin reading
+    const StdinReader = struct {
+        ctx: *SessionContext,
+        handle: std.os.windows.HANDLE,
+
+        fn run(self: *@This()) void {
+            var buf: [8192]u8 = undefined;
+            while (self.ctx.running.load(.acquire)) {
+                var bytes_read: u32 = 0;
+                const result = std.os.windows.kernel32.ReadFile(
+                    self.handle,
+                    &buf,
+                    buf.len,
+                    &bytes_read,
+                    null,
+                );
+                if (result == 0 or bytes_read == 0) {
+                    std.Thread.sleep(10 * std.time.ns_per_ms);
+                    continue;
+                }
+                writeToPty(self.ctx, buf[0..bytes_read], true);
+            }
+        }
+    };
+
+    var stdin_reader = StdinReader{ .ctx = ctx, .handle = stdin_handle };
+    const stdin_thread = try std.Thread.spawn(.{}, StdinReader.run, .{&stdin_reader});
+    defer stdin_thread.detach();
+
+    while (ctx.running.load(.acquire)) {
+        const bytes_read = main_platform.readFromPty(&ctx.pty, &buffer, 200) catch |err| {
+            if (err == error.WaitFailed or err == error.ReadFailed) {
+                std.Thread.sleep(10 * std.time.ns_per_ms);
+                continue;
+            }
+            return err;
+        };
+
+        if (bytes_read == 0) {
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+            continue;
+        }
+
+        const chunk = buffer[0..bytes_read];
+        var output_slice = chunk;
+        if (ctx.title_mode != .none) {
+            filtered.clearRetainingCapacity();
+            ctx.title_filter.filter(ctx.allocator, chunk, &filtered) catch {};
+            output_slice = filtered.items;
+        }
+
+        if (output_slice.len > 0) {
+            ctx.asciinema.writeOutput(output_slice) catch {};
+            ctx.stdout_mutex.lock();
+            _ = std.fs.File.stdout().writeAll(output_slice) catch {};
+            ctx.stdout_mutex.unlock();
+        }
+    }
+}
+
+fn mainLoopUnix(ctx: *SessionContext, stdin_fd: posix.fd_t) !void {
     var stdin_active = true;
     var poll_fds = [_]posix.pollfd{
         .{ .fd = ctx.pty.master, .events = posix.POLL.IN, .revents = 0 },

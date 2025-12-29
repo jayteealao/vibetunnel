@@ -14,6 +14,14 @@ pub fn build(b: *std.Build) void {
     });
     exe.linkLibC();
 
+    // Windows-specific linking
+    if (target.result.os.tag == .windows) {
+        exe.linkSystemLibrary("kernel32");
+        exe.linkSystemLibrary("user32");
+        exe.linkSystemLibrary("shell32");
+        exe.linkSystemLibrary("advapi32");
+    }
+
     const options = b.addOptions();
     const version = b.option([]const u8, "version", "VibeTunnel version") orelse "unknown";
     options.addOption([]const u8, "version", version);
@@ -32,6 +40,14 @@ pub fn build(b: *std.Build) void {
         .root_module = test_module,
     });
     tests.linkLibC();
+
+    // Windows-specific linking for tests
+    if (target.result.os.tag == .windows) {
+        tests.linkSystemLibrary("kernel32");
+        tests.linkSystemLibrary("user32");
+        tests.linkSystemLibrary("shell32");
+        tests.linkSystemLibrary("advapi32");
+    }
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run vt-fwd tests");
