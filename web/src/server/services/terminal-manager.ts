@@ -379,6 +379,44 @@ export class TerminalManager {
       return;
     }
 
+    // Helper to process file changes
+    const processFileChanges = () => {
+      try {
+        const stats = fs.statSync(streamPath);
+        if (stats.size > lastOffset) {
+          // Read only the new data
+          const fd = fs.openSync(streamPath, 'r');
+          const buffer = Buffer.alloc(stats.size - lastOffset);
+          fs.readSync(fd, buffer, 0, buffer.length, lastOffset);
+          fs.closeSync(fd);
+
+          // Update offset
+          lastOffset = stats.size;
+          sessionTerminal.lastFileOffset = lastOffset;
+
+          // Process new data
+          const newData = buffer.toString('utf8');
+          lineBuffer += newData;
+
+          // Process complete lines
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() || ''; // Keep incomplete line for next time
+          sessionTerminal.lineBuffer = lineBuffer;
+
+          for (const line of lines) {
+            if (line.trim()) {
+              this.handleStreamLine(sessionId, sessionTerminal, line);
+            }
+          }
+        }
+      } catch (error) {
+        logger.error(
+          `Error reading stream file for session ${truncateForLog(sessionId)}:`,
+          error
+        );
+      }
+    };
+
     try {
       // Read existing content first
       const content = fs.readFileSync(streamPath, 'utf8');
@@ -392,47 +430,26 @@ export class TerminalManager {
         }
       }
 
-      // Watch for changes
-      sessionTerminal.watcher = fs.watch(streamPath, (eventType) => {
-        if (eventType === 'change') {
-          try {
-            const stats = fs.statSync(streamPath);
-            if (stats.size > lastOffset) {
-              // Read only the new data
-              const fd = fs.openSync(streamPath, 'r');
-              const buffer = Buffer.alloc(stats.size - lastOffset);
-              fs.readSync(fd, buffer, 0, buffer.length, lastOffset);
-              fs.closeSync(fd);
-
-              // Update offset
-              lastOffset = stats.size;
-              sessionTerminal.lastFileOffset = lastOffset;
-
-              // Process new data
-              const newData = buffer.toString('utf8');
-              lineBuffer += newData;
-
-              // Process complete lines
-              const lines = lineBuffer.split('\n');
-              lineBuffer = lines.pop() || ''; // Keep incomplete line for next time
-              sessionTerminal.lineBuffer = lineBuffer;
-
-              for (const line of lines) {
-                if (line.trim()) {
-                  this.handleStreamLine(sessionId, sessionTerminal, line);
-                }
-              }
-            }
-          } catch (error) {
-            logger.error(
-              `Error reading stream file for session ${truncateForLog(sessionId)}:`,
-              error
-            );
+      // On Windows, fs.watch can fail with EPERM. Use polling as fallback.
+      if (process.platform === 'win32') {
+        const pollInterval = 50; // Poll every 50ms for faster response
+        const poll = () => {
+          if (!this.terminals.has(sessionId)) return;
+          processFileChanges();
+          // Store timer ID on sessionTerminal for cleanup (reuse watcher field type)
+          (sessionTerminal as { pollingTimer?: NodeJS.Timeout }).pollingTimer = setTimeout(poll, pollInterval);
+        };
+        logger.log(chalk.yellow(`Using polling for stream file session ${truncateForLog(sessionId)}`));
+        poll();
+      } else {
+        // Watch for changes using fs.watch on Unix
+        sessionTerminal.watcher = fs.watch(streamPath, (eventType) => {
+          if (eventType === 'change') {
+            processFileChanges();
           }
-        }
-      });
-
-      logger.log(chalk.green(`Watching stream file for session ${truncateForLog(sessionId)}`));
+        });
+        logger.log(chalk.green(`Watching stream file for session ${truncateForLog(sessionId)}`));
+      }
     } catch (error) {
       logger.error(`Failed to watch stream file for session ${truncateForLog(sessionId)}:`, error);
       throw error;
@@ -1156,6 +1173,11 @@ export class TerminalManager {
     if (sessionTerminal) {
       if (sessionTerminal.watcher) {
         sessionTerminal.watcher.close();
+      }
+      // Clear polling timer on Windows
+      const pollingTimer = (sessionTerminal as { pollingTimer?: NodeJS.Timeout }).pollingTimer;
+      if (pollingTimer) {
+        clearTimeout(pollingTimer);
       }
       sessionTerminal.terminal.free();
       this.terminals.delete(sessionId);

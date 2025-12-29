@@ -26,7 +26,8 @@
           '-lkernel32.lib',
           '-luser32.lib',
           '-lshell32.lib',
-          '-ladvapi32.lib'
+          '-ladvapi32.lib',
+          '-lShlwapi.lib'
         ],
         'defines': [
           '_WIN32_WINNT=0x0600',
@@ -53,6 +54,9 @@
     'target_name': 'spawn-helper',
     'type': 'executable',
     'conditions': [
+      ['OS=="win"', {
+        'type': 'none'
+      }],
       ['OS!="win"', {
         'sources': [
           'src/unix/spawn-helper.cc'

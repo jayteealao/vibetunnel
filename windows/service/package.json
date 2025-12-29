@@ -1,0 +1,16 @@
+{
+  "name": "vibetunnel-service",
+  "version": "1.0.0",
+  "description": "VibeTunnel Windows Service wrapper",
+  "main": "index.js",
+  "scripts": {
+    "install-service": "node install.js",
+    "uninstall-service": "node uninstall.js"
+  },
+  "dependencies": {
+    "node-windows": "^1.0.0-beta.8"
+  },
+  "keywords": ["vibetunnel", "service", "windows"],
+  "author": "VibeTunnel",
+  "license": "MIT"
+}

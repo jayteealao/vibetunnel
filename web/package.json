@@ -1,7 +1,7 @@
 {
   "name": "vibetunnel",
   "version": "1.0.0-beta.16",
-  "description": "Terminal sharing server with web interface - supports macOS, Linux, and headless environments",
+  "description": "Terminal sharing server with web interface - supports macOS, Linux, Windows, and headless environments",
   "main": "dist/server/server.js",
   "bin": {
     "vibetunnel": "./bin/vibetunnel"
@@ -23,7 +23,8 @@
   ],
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "engines": {
     "node": ">=22.12.0"
