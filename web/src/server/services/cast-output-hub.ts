@@ -145,43 +145,76 @@ export class CastOutputHub {
   }
 
   private startWatching(sessionId: string, watcherInfo: WatcherInfo): void {
-    watcherInfo.watcher = fs.watch(watcherInfo.streamPath, { persistent: true }, (eventType) => {
-      if (eventType !== 'change') return;
+    // On Windows, fs.watch can fail with EPERM. Use polling as fallback.
+    if (process.platform === 'win32') {
+      this.startPollingWatch(sessionId, watcherInfo);
+      return;
+    }
 
-      try {
-        const stats = fs.statSync(watcherInfo.streamPath);
-        if (!(stats.size > watcherInfo.lastSize || stats.mtimeMs > watcherInfo.lastMtime)) return;
+    try {
+      watcherInfo.watcher = fs.watch(watcherInfo.streamPath, { persistent: true }, (eventType) => {
+        if (eventType !== 'change') return;
+        this.processFileChanges(sessionId, watcherInfo);
+      });
 
-        watcherInfo.lastSize = stats.size;
-        watcherInfo.lastMtime = stats.mtimeMs;
+      watcherInfo.watcher.on('error', (error) => {
+        logger.error(`file watcher error for session ${sessionId}:`, error);
+        // Fall back to polling on error
+        watcherInfo.watcher?.close();
+        watcherInfo.watcher = undefined;
+        this.startPollingWatch(sessionId, watcherInfo);
+      });
 
-        if (stats.size <= watcherInfo.lastOffset) return;
+      logger.debug(chalk.green(`watching cast file for session ${sessionId}`));
+    } catch (error) {
+      logger.debug(`fs.watch failed for session ${sessionId}, falling back to polling:`, error);
+      this.startPollingWatch(sessionId, watcherInfo);
+    }
+  }
 
-        const fd = fs.openSync(watcherInfo.streamPath, 'r');
-        const buffer = Buffer.alloc(stats.size - watcherInfo.lastOffset);
-        fs.readSync(fd, buffer, 0, buffer.length, watcherInfo.lastOffset);
-        fs.closeSync(fd);
+  private startPollingWatch(sessionId: string, watcherInfo: WatcherInfo): void {
+    const pollInterval = 100; // Poll every 100ms
 
-        watcherInfo.lastOffset = stats.size;
+    const poll = () => {
+      if (!this.activeWatchers.has(sessionId)) return;
+      this.processFileChanges(sessionId, watcherInfo);
+      watcherInfo.retryTimer = setTimeout(poll, pollInterval);
+    };
 
-        watcherInfo.lineBuffer += buffer.toString('utf8');
-        const lines = watcherInfo.lineBuffer.split('\n');
-        watcherInfo.lineBuffer = lines.pop() || '';
+    logger.debug(chalk.yellow(`using polling for cast file session ${sessionId}`));
+    poll();
+  }
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          this.broadcastLine(sessionId, line, watcherInfo);
-        }
-      } catch (error) {
-        logger.error(`failed to read file changes for session ${sessionId}:`, error);
+  private processFileChanges(sessionId: string, watcherInfo: WatcherInfo): void {
+    try {
+      if (!fs.existsSync(watcherInfo.streamPath)) return;
+
+      const stats = fs.statSync(watcherInfo.streamPath);
+      if (!(stats.size > watcherInfo.lastSize || stats.mtimeMs > watcherInfo.lastMtime)) return;
+
+      watcherInfo.lastSize = stats.size;
+      watcherInfo.lastMtime = stats.mtimeMs;
+
+      if (stats.size <= watcherInfo.lastOffset) return;
+
+      const fd = fs.openSync(watcherInfo.streamPath, 'r');
+      const buffer = Buffer.alloc(stats.size - watcherInfo.lastOffset);
+      fs.readSync(fd, buffer, 0, buffer.length, watcherInfo.lastOffset);
+      fs.closeSync(fd);
+
+      watcherInfo.lastOffset = stats.size;
+
+      watcherInfo.lineBuffer += buffer.toString('utf8');
+      const lines = watcherInfo.lineBuffer.split('\n');
+      watcherInfo.lineBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        this.broadcastLine(sessionId, line, watcherInfo);
       }
-    });
-
-    watcherInfo.watcher.on('error', (error) => {
-      logger.error(`file watcher error for session ${sessionId}:`, error);
-    });
-
-    logger.debug(chalk.green(`watching cast file for session ${sessionId}`));
+    } catch (error) {
+      logger.error(`failed to read file changes for session ${sessionId}:`, error);
+    }
   }
 
   private parseAsciinemaLine(line: string): AsciinemaEvent | AsciinemaHeader | null {
