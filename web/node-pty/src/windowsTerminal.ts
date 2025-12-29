@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs';
+import * as net from 'net';
 import { Socket } from 'net';
 import { Terminal, DEFAULT_COLS, DEFAULT_ROWS } from './terminal';
 import { IPtyOpenOptions, IWindowsPtyForkOptions } from './interfaces';
@@ -45,16 +46,39 @@ export class WindowsTerminal extends Terminal {
   public get master(): Socket | undefined { return this._outSocket; }
   public get slave(): Socket | undefined { return this._inSocket; }
 
+  // Override emit to use internal event emitter, preventing infinite loop
+  // when socket handlers call this.emit() which would otherwise go back to the socket
+  public emit(eventName: string, ...args: any[]): any {
+    return this._internalee.emit(eventName, ...args);
+  }
+
+  // Override on to use internal event emitter for consistency
+  public on(eventName: string, listener: (...args: any[]) => any): void {
+    this._internalee.on(eventName, listener);
+  }
+
+  public addListener(eventName: string, listener: (...args: any[]) => any): void {
+    this.on(eventName, listener);
+  }
+
+  public removeListener(eventName: string, listener: (...args: any[]) => any): void {
+    this._internalee.removeListener(eventName, listener);
+  }
+
+  public once(eventName: string, listener: (...args: any[]) => any): void {
+    this._internalee.once(eventName, listener);
+  }
+
   constructor(file?: string, args?: ArgvOrCommandLine, opt?: IWindowsPtyForkOptions) {
     super(opt);
 
     // Load native module
     if (!conptyNative) {
       try {
-        conptyNative = require('../build/Release/conpty.node');
+        conptyNative = require('../build/Release/pty.node');
       } catch (outerError) {
         try {
-          conptyNative = require('../build/Debug/conpty.node');
+          conptyNative = require('../build/Debug/pty.node');
         } catch (innerError) {
           throw outerError;
         }
@@ -105,15 +129,16 @@ export class WindowsTerminal extends Terminal {
   }
 
   private _setupDirectSockets(term: IConptyProcess): void {
-    // Setup output socket - read directly from conout
-    const outFd = fs.openSync(term.conout, 'r');
-    this._outSocket = new Socket({ fd: outFd, readable: true, writable: false });
+    // Windows named pipes must be connected as clients, not opened as files
+    // The conout/conin paths are like \\.\pipe\conpty-<timestamp>-<random>
+
+    // Setup output socket - connect to conout named pipe
+    this._outSocket = net.connect(term.conout);
     this._outSocket.setEncoding('utf8');
     this._socket = this._outSocket;
 
-    // Setup input socket - write directly to conin
-    const inFd = fs.openSync(term.conin, 'w');
-    this._inSocket = new Socket({ fd: inFd, readable: false, writable: true });
+    // Setup input socket - connect to conin named pipe
+    this._inSocket = net.connect(term.conin);
     this._inSocket.setEncoding('utf8');
 
     // Forward events directly
@@ -137,6 +162,14 @@ export class WindowsTerminal extends Terminal {
         this.emit('exit', 0);
       }
       this._close();
+    });
+
+    this._inSocket.on('error', (err) => {
+      if ((err as any).code && ((err as any).code.includes('EPIPE') || (err as any).code.includes('EIO'))) {
+        // Expected errors when process exits
+        return;
+      }
+      // Don't emit errors for input socket - just log them
     });
   }
 
@@ -163,6 +196,9 @@ export class WindowsTerminal extends Terminal {
   }
 
   public kill(signal?: string): void {
+    // Only emit exit once
+    const shouldEmitExit = this._exitCode === undefined;
+
     this._close();
     try {
       process.kill(this._pid);
@@ -170,6 +206,13 @@ export class WindowsTerminal extends Terminal {
       // Ignore if process cannot be found
     }
     this._ptyNative.kill(this._pty, this._useConptyDll);
+
+    // Emit exit event if the native callback hasn't fired yet
+    // This ensures listeners are notified even on forceful termination
+    if (shouldEmitExit) {
+      this._exitCode = 0;
+      this.emit('exit', 0);
+    }
   }
 
   protected _close(): void {
