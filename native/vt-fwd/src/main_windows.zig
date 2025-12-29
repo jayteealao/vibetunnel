@@ -90,14 +90,69 @@ pub fn normalizeWindowsPath(allocator: std.mem.Allocator, unix_path: []const u8)
     return result;
 }
 
-/// Wait for process to exit and get exit code
-pub fn waitForProcess(proc_info: process_windows.ProcessInfo) !u32 {
-    return proc_info.wait();
+/// Check if a process is still alive (by PID)
+pub fn isProcessAlive(pid: i32) !bool {
+    if (pid <= 0) return false;
+
+    // Open process handle with minimal rights (just to check if it exists)
+    const handle = windows.OpenProcess(
+        windows.SYNCHRONIZE,
+        windows.FALSE,
+        @intCast(pid),
+    ) catch {
+        // If we can't open it, assume it's dead
+        return false;
+    };
+    defer windows.CloseHandle(handle);
+
+    // Check if process has exited
+    var exit_code: u32 = 0;
+    if (windows.kernel32.GetExitCodeProcess(handle, &exit_code) == 0) {
+        return false;
+    }
+
+    // STILL_ACTIVE = 259 means process is still running
+    const STILL_ACTIVE: u32 = 259;
+    return exit_code == STILL_ACTIVE;
 }
 
-/// Terminate a process
-pub fn terminateProcess(proc_info: process_windows.ProcessInfo) !void {
-    try proc_info.terminate(1);
+/// Wait for process to exit and get exit code (by PID)
+pub fn waitForProcess(pid: i32) !struct { exit_code: i32, signal: ?u8 } {
+    if (pid <= 0) return .{ .exit_code = 1, .signal = null };
+
+    const handle = windows.OpenProcess(
+        windows.SYNCHRONIZE | windows.PROCESS_QUERY_INFORMATION,
+        windows.FALSE,
+        @intCast(pid),
+    ) catch return .{ .exit_code = 1, .signal = null };
+    defer windows.CloseHandle(handle);
+
+    // Wait for process to exit
+    _ = windows.WaitForSingleObject(handle, windows.INFINITE) catch {
+        return .{ .exit_code = 1, .signal = null };
+    };
+
+    // Get exit code
+    var exit_code: u32 = 0;
+    if (windows.kernel32.GetExitCodeProcess(handle, &exit_code) == 0) {
+        return .{ .exit_code = 1, .signal = null };
+    }
+
+    return .{ .exit_code = @intCast(exit_code), .signal = null };
+}
+
+/// Terminate a process (by PID)
+pub fn terminateProcess(pid: i32) !void {
+    if (pid <= 0) return;
+
+    const handle = windows.OpenProcess(
+        windows.PROCESS_TERMINATE,
+        windows.FALSE,
+        @intCast(pid),
+    ) catch return;
+    defer windows.CloseHandle(handle);
+
+    _ = windows.TerminateProcess(handle, 1);
 }
 
 /// Read from ConPTY output (non-blocking with timeout)

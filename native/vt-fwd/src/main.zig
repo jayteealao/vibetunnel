@@ -120,18 +120,18 @@ const EnvDefaults = struct {
     verbosity: ?logger_mod.Level = null,
 
     fn load(self: *EnvDefaults) void {
-        if (std.posix.getenv("VIBETUNNEL_TITLE_MODE")) |val| {
-            if (parseTitleMode(std.mem.sliceTo(val, 0))) |mode| {
+        if (getEnv("VIBETUNNEL_TITLE_MODE")) |val| {
+            if (parseTitleMode(val)) |mode| {
                 self.title_mode = mode;
             }
         }
-        if (std.posix.getenv("VIBETUNNEL_LOG_LEVEL")) |val| {
-            if (logger_mod.parseLevel(std.mem.sliceTo(val, 0))) |level| {
+        if (getEnv("VIBETUNNEL_LOG_LEVEL")) |val| {
+            if (logger_mod.parseLevel(val)) |level| {
                 self.verbosity = level;
             }
         }
-        if (std.posix.getenv("VIBETUNNEL_DEBUG")) |val| {
-            if (isTruthy(std.mem.sliceTo(val, 0))) {
+        if (getEnv("VIBETUNNEL_DEBUG")) |val| {
+            if (isTruthy(val)) {
                 self.verbosity = .debug;
             }
         }
@@ -158,6 +158,22 @@ const ExitInfo = struct {
     exit_code: i32,
     signal: ?u8,
 };
+
+// Cross-platform environment variable helper
+fn getEnv(key: []const u8) ?[]const u8 {
+    if (is_windows) {
+        if (std.process.getEnvMap(std.heap.page_allocator)) |env_map_result| {
+            var env_map = env_map_result;
+            defer env_map.deinit();
+            if (env_map.get(key)) |val| {
+                return val;
+            }
+        } else |_| {}
+        return null;
+    } else {
+        return if (std.posix.getenv(key)) |val| std.mem.sliceTo(val, 0) else null;
+    }
+}
 
 var g_running = std.atomic.Value(bool).init(true);
 var g_signal = std.atomic.Value(i32).init(0);
@@ -278,7 +294,7 @@ pub fn main() !void {
         .gitHasChanges = git_info.gitHasChanges,
         .gitIsWorktree = git_info.gitIsWorktree,
         .gitMainRepoPath = git_info.gitMainRepoPath,
-        .attachedViaVT = if (std.posix.getenv("VIBETUNNEL_SESSION_ID") != null) true else null,
+        .attachedViaVT = if (getEnv("VIBETUNNEL_SESSION_ID") != null) true else null,
     };
 
     try session_mod.writeSessionInfo(session_json_path, session_info, allocator);
@@ -404,14 +420,22 @@ pub fn main() !void {
 
     g_running.store(false, .release);
 
-    const signaled = g_signal.load(.acquire);
-    if (signaled != 0) {
-        const sig_u8: u8 = @as(u8, @intCast(signaled));
-        _ = posix.kill(-pid, sig_u8) catch {};
-    }
+    // Platform-specific process cleanup
+    const exit_info = if (is_windows) blk: {
+        // Windows: Wait for process and get exit code
+        const process_info = main_platform.waitForProcess(pid) catch .{ .exit_code = 1, .signal = null };
+        break :blk process_info;
+    } else blk: {
+        // Unix: Handle signals and wait
+        const signaled = g_signal.load(.acquire);
+        if (signaled != 0) {
+            const sig_u8: u8 = @as(u8, @intCast(signaled));
+            _ = posix.kill(-pid, sig_u8) catch {};
+        }
 
-    const wait = posix.waitpid(pid, 0);
-    const exit_info = decodeExitStatus(wait.status);
+        const wait = posix.waitpid(pid, 0);
+        break :blk decodeExitStatus(wait.status);
+    };
 
     asciinema_writer.writeExit(exit_info.exit_code, session_id) catch {};
 
@@ -528,7 +552,7 @@ fn getHome() []const u8 {
     if (is_windows) {
         return main_platform.getHomeDir();
     }
-    if (std.posix.getenv("HOME")) |val| return std.mem.sliceTo(val, 0);
+    if (getEnv("HOME")) |val| return val;
     return "";
 }
 
@@ -557,18 +581,23 @@ fn isValidSessionId(session_id: []const u8) bool {
 
 fn determineInitialSize() !SizeInfo {
     const stdout_fd = std.fs.File.stdout().handle;
-    const is_external = std.posix.getenv("VIBETUNNEL_SESSION_ID") != null;
+    const is_external = getEnv("VIBETUNNEL_SESSION_ID") != null;
+
+    const is_tty = if (is_windows)
+        main_platform.isTerminal(stdout_fd)
+    else
+        posix.isatty(stdout_fd);
 
     if (is_external) {
         std.Thread.sleep(100 * std.time.ns_per_ms);
-        if (posix.isatty(stdout_fd)) {
+        if (is_tty) {
             const ws = pty_mod.getWinsizeFromFd(stdout_fd) catch return .{ .cols = 80, .rows = 24, .has_size = false };
             return .{ .cols = ws.ws_col, .rows = ws.ws_row, .has_size = true };
         }
         return .{ .cols = 80, .rows = 24, .has_size = false };
     }
 
-    if (posix.isatty(stdout_fd)) {
+    if (is_tty) {
         const ws = pty_mod.getWinsizeFromFd(stdout_fd) catch return .{ .cols = 120, .rows = 40, .has_size = true };
         return .{ .cols = ws.ws_col, .rows = ws.ws_row, .has_size = true };
     }
@@ -672,7 +701,14 @@ fn handleSocketResize(context: *anyopaque, cols: u16, rows: u16) void {
 fn handleSocketResetSize(context: *anyopaque) void {
     const ctx: *SessionContext = @ptrCast(@alignCast(context));
     const stdout_fd = std.fs.File.stdout().handle;
-    if (!posix.isatty(stdout_fd)) return;
+
+    const is_tty = if (is_windows)
+        main_platform.isTerminal(stdout_fd)
+    else
+        posix.isatty(stdout_fd);
+
+    if (!is_tty) return;
+
     if (pty_mod.getWinsizeFromFd(stdout_fd)) |ws| {
         resizePty(ctx, ws.ws_col, ws.ws_row);
     } else |_| {}
@@ -682,9 +718,17 @@ fn handleSocketKill(context: *anyopaque, signal: ?i32) void {
     const ctx: *SessionContext = @ptrCast(@alignCast(context));
     const pid = g_child_pid.load(.acquire);
     if (pid <= 0) return;
-    const sig = signal orelse @as(i32, @intCast(posix.SIG.TERM));
-    const sig_u8: u8 = @as(u8, @intCast(sig));
-    _ = posix.kill(-pid, sig_u8) catch {};
+
+    if (is_windows) {
+        // Windows: Terminate process via TerminateProcess
+        main_platform.terminateProcess(pid) catch {};
+    } else {
+        // Unix: Send signal to process group
+        const sig = signal orelse @as(i32, @intCast(posix.SIG.TERM));
+        const sig_u8: u8 = @as(u8, @intCast(sig));
+        _ = posix.kill(-pid, sig_u8) catch {};
+    }
+
     ctx.running.store(false, .release);
 }
 
@@ -839,7 +883,18 @@ fn mainLoopWindows(ctx: *SessionContext, stdin_handle: std.os.windows.HANDLE) !v
     const stdin_thread = try std.Thread.spawn(.{}, StdinReader.run, .{&stdin_reader});
     defer stdin_thread.detach();
 
+    const pid = g_child_pid.load(.acquire);
+
     while (ctx.running.load(.acquire)) {
+        // Check if process is still alive
+        if (pid > 0) {
+            const is_alive = main_platform.isProcessAlive(pid) catch false;
+            if (!is_alive) {
+                // Process has exited, break loop
+                break;
+            }
+        }
+
         const bytes_read = main_platform.readFromPty(&ctx.pty, &buffer, 200) catch |err| {
             if (err == error.WaitFailed or err == error.ReadFailed) {
                 std.Thread.sleep(10 * std.time.ns_per_ms);
