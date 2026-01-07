@@ -1,12 +1,15 @@
 import type { Request, Response } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { detectGitInfo } from '../utils/git-info';
-import { controlUnixHandler } from '../websocket/control-unix-handler';
+import { controlIpcHandler } from '../websocket/control-ipc-handler';
 import { createSessionRoutes, requestTerminalSpawn } from './sessions';
 
 // Mock dependencies
-vi.mock('../websocket/control-unix-handler', () => ({
-  controlUnixHandler: {
+vi.mock('../websocket/control-ipc-handler', () => ({
+  controlIpcHandler: {
+    isClientConnected: vi.fn(),
+  },
+  controlUnixHandler: { // Legacy export
     isMacAppConnected: vi.fn(),
   },
 }));
@@ -99,9 +102,9 @@ describe('sessions routes', () => {
   });
 
   describe('GET /server/status', () => {
-    it('should return server status with Mac app connection state', async () => {
-      // Mock Mac app as connected
-      vi.mocked(controlUnixHandler.isMacAppConnected).mockReturnValue(true);
+    it('should return server status with native app connection state', async () => {
+      // Mock native app as connected
+      vi.mocked(controlIpcHandler.isClientConnected).mockReturnValue(true);
 
       const router = createSessionRoutes({
         ptyManager: mockPtyManager,
@@ -146,9 +149,9 @@ describe('sessions routes', () => {
       });
     });
 
-    it('should return Mac app disconnected when not connected', async () => {
-      // Mock Mac app as disconnected
-      vi.mocked(controlUnixHandler.isMacAppConnected).mockReturnValue(false);
+    it('should return native app disconnected when not connected', async () => {
+      // Mock native app as disconnected
+      vi.mocked(controlIpcHandler.isClientConnected).mockReturnValue(false);
 
       const router = createSessionRoutes({
         ptyManager: mockPtyManager,
@@ -189,8 +192,8 @@ describe('sessions routes', () => {
     });
 
     it('should handle errors gracefully', async () => {
-      // Mock an error in isMacAppConnected
-      vi.mocked(controlUnixHandler.isMacAppConnected).mockImplementation(() => {
+      // Mock an error in isClientConnected
+      vi.mocked(controlIpcHandler.isClientConnected).mockImplementation(() => {
         throw new Error('Connection check failed');
       });
 

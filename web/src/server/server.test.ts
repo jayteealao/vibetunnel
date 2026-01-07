@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
+import type { ControlIpcHandler } from './websocket/control-ipc-handler.js';
 import type { ControlMessage } from './websocket/control-protocol.js';
-import type { ControlUnixHandler } from './websocket/control-unix-handler.js';
 
 // Mock WebSocket
 vi.mock('ws');
 
 describe('Config WebSocket', () => {
-  let mockControlUnixHandler: ControlUnixHandler;
+  let mockControlIpcHandler: ControlIpcHandler;
   let messageHandler: (data: Buffer | ArrayBuffer | string) => void;
 
   beforeEach(() => {
@@ -30,8 +30,8 @@ describe('Config WebSocket', () => {
         const message = JSON.parse(data.toString());
         if (message.type === 'update-repository-path') {
           const newPath = message.path;
-          // Forward to Mac app via Unix socket if available
-          if (mockControlUnixHandler) {
+          // Forward to native app via IPC if available
+          if (mockControlIpcHandler) {
             const controlMessage: ControlMessage = {
               id: 'test-id',
               type: 'request' as const,
@@ -39,8 +39,8 @@ describe('Config WebSocket', () => {
               action: 'repository-path-update',
               payload: { path: newPath, source: 'web' },
             };
-            // Send to Mac and wait for response
-            await mockControlUnixHandler.sendControlMessage(controlMessage);
+            // Send to native app and wait for response
+            await mockControlIpcHandler.sendControlMessage(controlMessage);
           }
         }
       } catch {
@@ -48,10 +48,10 @@ describe('Config WebSocket', () => {
       }
     };
 
-    // Create mock control Unix handler
-    mockControlUnixHandler = {
+    // Create mock control IPC handler
+    mockControlIpcHandler = {
       sendControlMessage: vi.fn(),
-    } as unknown as ControlUnixHandler;
+    } as unknown as ControlIpcHandler;
   });
 
   afterEach(() => {
@@ -59,7 +59,7 @@ describe('Config WebSocket', () => {
   });
 
   describe('repository path update from web', () => {
-    it('should forward path update to Mac app via Unix socket', async () => {
+    it('should forward path update to native app via IPC', async () => {
       // Setup mock response
       const mockResponse: ControlMessage = {
         id: 'test-id',
@@ -68,7 +68,7 @@ describe('Config WebSocket', () => {
         action: 'repository-path-update',
         payload: { success: true },
       };
-      vi.mocked(mockControlUnixHandler.sendControlMessage).mockResolvedValue(mockResponse);
+      vi.mocked(mockControlIpcHandler.sendControlMessage).mockResolvedValue(mockResponse);
 
       // Simulate message from web client
       const message = JSON.stringify({
@@ -80,7 +80,7 @@ describe('Config WebSocket', () => {
       await messageHandler(Buffer.from(message));
 
       // Verify control message was sent
-      expect(mockControlUnixHandler.sendControlMessage).toHaveBeenCalledWith({
+      expect(mockControlIpcHandler.sendControlMessage).toHaveBeenCalledWith({
         id: 'test-id',
         type: 'request',
         category: 'system',
@@ -89,7 +89,7 @@ describe('Config WebSocket', () => {
       });
     });
 
-    it('should handle Mac app confirmation response', async () => {
+    it('should handle native app confirmation response', async () => {
       const mockResponse: ControlMessage = {
         id: 'test-id',
         type: 'response',
@@ -97,7 +97,7 @@ describe('Config WebSocket', () => {
         action: 'repository-path-update',
         payload: { success: true },
       };
-      vi.mocked(mockControlUnixHandler.sendControlMessage).mockResolvedValue(mockResponse);
+      vi.mocked(mockControlIpcHandler.sendControlMessage).mockResolvedValue(mockResponse);
 
       const message = JSON.stringify({
         type: 'update-repository-path',
@@ -107,10 +107,10 @@ describe('Config WebSocket', () => {
       await messageHandler(Buffer.from(message));
 
       // Should complete without errors
-      expect(mockControlUnixHandler.sendControlMessage).toHaveBeenCalled();
+      expect(mockControlIpcHandler.sendControlMessage).toHaveBeenCalled();
     });
 
-    it('should handle Mac app failure response', async () => {
+    it('should handle native app failure response', async () => {
       const mockResponse: ControlMessage = {
         id: 'test-id',
         type: 'response',
@@ -118,7 +118,7 @@ describe('Config WebSocket', () => {
         action: 'repository-path-update',
         payload: { success: false },
       };
-      vi.mocked(mockControlUnixHandler.sendControlMessage).mockResolvedValue(mockResponse);
+      vi.mocked(mockControlIpcHandler.sendControlMessage).mockResolvedValue(mockResponse);
 
       const message = JSON.stringify({
         type: 'update-repository-path',
@@ -128,12 +128,12 @@ describe('Config WebSocket', () => {
       await messageHandler(Buffer.from(message));
 
       // Should handle gracefully
-      expect(mockControlUnixHandler.sendControlMessage).toHaveBeenCalled();
+      expect(mockControlIpcHandler.sendControlMessage).toHaveBeenCalled();
     });
 
-    it('should handle missing control Unix handler', async () => {
+    it('should handle missing control IPC handler', async () => {
       // Simulate no control handler available
-      mockControlUnixHandler = null as unknown as ControlUnixHandler;
+      mockControlIpcHandler = null as unknown as ControlIpcHandler;
 
       const message = JSON.stringify({
         type: 'update-repository-path',
@@ -153,7 +153,7 @@ describe('Config WebSocket', () => {
       await messageHandler(Buffer.from(message));
 
       // Should not call sendControlMessage
-      expect(mockControlUnixHandler.sendControlMessage).not.toHaveBeenCalled();
+      expect(mockControlIpcHandler.sendControlMessage).not.toHaveBeenCalled();
     });
 
     it('should handle invalid JSON gracefully', async () => {
@@ -161,12 +161,12 @@ describe('Config WebSocket', () => {
 
       // Should not throw
       await expect(messageHandler(Buffer.from(invalidMessage))).resolves.not.toThrow();
-      expect(mockControlUnixHandler.sendControlMessage).not.toHaveBeenCalled();
+      expect(mockControlIpcHandler.sendControlMessage).not.toHaveBeenCalled();
     });
 
     it('should handle control message send errors', async () => {
-      vi.mocked(mockControlUnixHandler.sendControlMessage).mockRejectedValue(
-        new Error('Unix socket error')
+      vi.mocked(mockControlIpcHandler.sendControlMessage).mockRejectedValue(
+        new Error('IPC error')
       );
 
       const message = JSON.stringify({
